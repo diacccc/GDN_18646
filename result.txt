@@ -1,0 +1,16 @@
+B= 1, T=    1  baseline=  0.1180 ms  fused=  0.0250 ms  custom=  0.0175 ms  custom/fused= 1.43x  max_err=0.000e+00
+B= 1, T= 2048  baseline=  0.1502 ms  fused=  0.0253 ms  custom=  0.0178 ms  custom/fused= 1.43x  max_err=1.562e-02
+B= 1, T= 4096  baseline=  0.3075 ms  fused=  0.0306 ms  custom=  0.0293 ms  custom/fused= 1.04x  max_err=7.812e-03
+B= 1, T= 8192  baseline=  0.5873 ms  fused=  0.0595 ms  custom=  0.0562 ms  custom/fused= 1.06x  max_err=7.812e-03
+B= 8, T=    1  baseline=  0.1163 ms  fused=  0.0249 ms  custom=  0.0174 ms  custom/fused= 1.43x  max_err=0.000e+00
+B= 8, T= 2048  baseline=  1.1075 ms  fused=  0.1108 ms  custom=  0.1055 ms  custom/fused= 1.05x  max_err=1.562e-02
+B= 8, T= 4096  baseline=  2.0639 ms  fused=  0.2083 ms  custom=  0.2027 ms  custom/fused= 1.03x  max_err=1.562e-02
+B= 8, T= 8192  baseline=  4.0779 ms  fused=  0.4103 ms  custom=  0.3994 ms  custom/fused= 1.03x  max_err=1.562e-02
+B=32, T=    1  baseline=  0.1161 ms  fused=  0.0249 ms  custom=  0.0177 ms  custom/fused= 1.41x  max_err=0.000e+00
+B=32, T= 2048  baseline=  4.0783 ms  fused=  0.4102 ms  custom=  0.3995 ms  custom/fused= 1.03x  max_err=1.562e-02
+B=32, T= 4096  baseline=  8.1129 ms  fused=  0.8136 ms  custom=  0.7930 ms  custom/fused= 1.03x  max_err=1.562e-02
+B=32, T= 8192  baseline= 16.1794 ms  fused=  1.6219 ms  custom=  1.5800 ms  custom/fused= 1.03x  max_err=1.562e-02
+B=64, T=    1  baseline=  0.1159 ms  fused=  0.0253 ms  custom=  0.0176 ms  custom/fused= 1.44x  max_err=0.000e+00
+B=64, T= 2048  baseline=  8.1140 ms  fused=  0.8134 ms  custom=  0.7929 ms  custom/fused= 1.03x  max_err=1.562e-02
+B=64, T= 4096  baseline= 16.1813 ms  fused=  1.6193 ms  custom=  1.5806 ms  custom/fused= 1.02x  max_err=3.125e-02
+B=64, T= 8192  baseline= 32.3436 ms  fused=  3.2351 ms  custom=  3.1542 ms  custom/fused= 1.03x  max_err=1.562e-02
