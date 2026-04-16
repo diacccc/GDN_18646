@@ -12,10 +12,21 @@ Via Modal:
 import sys
 import os
 import torch
+import torch.nn as nn
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from reference.rmsnorm_ref import ref_rmsnorm
+
+
+class RMSNormFused(nn.Module):
+    def __init__(self, dim, eps=1e-6):
+        super().__init__()
+        self.norm = nn.RMSNorm(dim, eps=eps, elementwise_affine=True,
+                               device="cuda", dtype=torch.bfloat16)
+
+    def forward(self, x):
+        return self.norm(x)
 
 
 def _compile_extension():
@@ -51,29 +62,40 @@ def run_bench(ext=None):
     if ext is None:
         ext = _compile_extension()
 
+    # Kernel is BF16-only and hardcoded to D=2048
+    D   = 2048
     eps = 1e-6
 
-    print("=" * 70)
-    print("Benchmark: RMSNorm  (N = B*T rows)")
-    print("=" * 70)
-    print(f"{'N':>8}  {'D':>6}  {'cuda (ms)':>10}  {'ref (ms)':>10}  {'speedup':>8}")
-    print("-" * 55)
+    torch_rms = RMSNormFused(D, eps=eps).eval()
+    torch.nn.init.ones_(torch_rms.norm.weight)  # match gamma=ones
 
-    for D in [1024, 2048, 4096]:
-        gamma = torch.ones(D, device="cuda", dtype=torch.float32)
-        for N in [1, 64, 512, 2048, 8192]:
-            x = torch.randn(N, D, device="cuda", dtype=torch.float32)
+    print("=" * 90)
+    print("Benchmark: RMSNorm BF16  (N = B*T rows, D=2048)")
+    print("=" * 90)
+    print(f"{'N':>8}  {'cuda (ms)':>10}  {'ref (ms)':>10}  {'torch (ms)':>11}  {'vs ref':>7}  {'vs torch':>9}")
+    print("-" * 70)
 
-            t_cuda = bench_ms(lambda: ext.forward(x.contiguous(), gamma, eps))
-            t_ref  = bench_ms(lambda: ref_rmsnorm(x.contiguous(), gamma, eps))
+    gamma = torch.ones(D, device="cuda", dtype=torch.bfloat16)
+    for B in [1, 8, 32, 64]:
+        for T in [1, 2048, 4096, 8192]:
+            N = B * T
+            x = torch.randn(N, D, device="cuda", dtype=torch.bfloat16)
 
-            print(f"{N:>8}  {D:>6}  {t_cuda:>10.4f}  {t_ref:>10.4f}  {t_ref/t_cuda:>7.2f}x")
+            t_cuda  = bench_ms(lambda: ext.forward(x.contiguous(), gamma, eps))
+            t_ref   = bench_ms(lambda: ref_rmsnorm(x.contiguous(), gamma, eps))
+            def run_fuse():
+                with torch.inference_mode():
+                    torch_rms(x)
+            t_torch = bench_ms(run_fuse)
+
+            print(f"{N:>8}  {t_cuda:>10.4f}  {t_ref:>10.4f}  {t_torch:>11.4f}  {t_ref/t_cuda:>6.2f}x  {t_torch/t_cuda:>8.2f}x")
 
             del x
             torch.cuda.empty_cache()
 
-        del gamma
-        print()
+    del gamma, torch_rms
+    torch.cuda.empty_cache()
+    print()
 
 
 if __name__ == "__main__":

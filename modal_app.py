@@ -30,19 +30,20 @@ import modal
 HERE = Path(__file__).parent
 
 # ---------------------------------------------------------------------------
-# Container image: CUDA 12.4 devel (has nvcc) + PyTorch + ninja.
+# Container image: CUDA 12.8 devel (has nvcc) + PyTorch 2.10 + ninja.
 # CUDA devel image is required because torch.utils.cpp_extension.load needs nvcc.
 # ---------------------------------------------------------------------------
 image = (
     modal.Image.from_registry(
-        "nvidia/cuda:12.4.1-devel-ubuntu22.04",
+        "nvidia/cuda:12.8.1-devel-ubuntu22.04",
         add_python="3.11",
     )
     .apt_install("git", "build-essential")
     .pip_install(
-        "torch==2.5.1",
+        "torch==2.10.0",
         "numpy",
         "ninja",  # much faster than plain setuptools build
+        extra_index_url="https://download.pytorch.org/whl/cu128",
     )
     # Source code: mounted at container start (fast redeploy on edits).
     .add_local_dir(HERE / "kernels", "/root/kernels")
@@ -54,7 +55,7 @@ image = (
 app = modal.App("gdn-kernels", image=image)
 
 # Default GPU. Override with MODAL_GPU env var if you ever want to try elsewhere.
-GPU = "A100-40GB"
+GPU = "A100-80GB"
 
 # Persist torch_extensions build cache across runs so we don't recompile
 # from scratch every cold start. Ninja still rebuilds on source change.
@@ -104,7 +105,7 @@ def _compile_one(kernel_name: str):
     ext_name, sources, extra_cflags = _KERNEL_REGISTRY[kernel_name]
 
     # Purge stale cached build so ninja rebuilds from current sources
-    stale_dir = os.path.join(cache_root, "py311_cu124", ext_name)
+    stale_dir = os.path.join(cache_root, "py311_cu128", ext_name)
     if os.path.isdir(stale_dir):
         shutil.rmtree(stale_dir)
         print(f"[compile] cleared stale cache: {stale_dir}")
