@@ -1,12 +1,12 @@
 """
-benchmark.py
+bench_fused_proj_conv_silu.py
 Throughput / latency benchmark for the fused Proj + Conv1D + SiLU kernel.
 
 Standalone:
-    python -m bench.benchmark
+    python -m bench.bench_fused_proj_conv_silu
 
 Via Modal:
-    modal run modal_app.py::bench
+    modal run modal_app.py --mode bench --kernel fused_proj_conv_silu
 """
 
 import sys

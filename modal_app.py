@@ -152,14 +152,24 @@ def test(kernel: str = "all"):
 
 
 @app.function(gpu=GPU, timeout=1800, volumes=VOLUMES)
-def bench():
-    """Run throughput/latency benchmarks for the fused proj+conv+silu kernel."""
+def bench(kernel: str = "fused_proj_conv_silu"):
+    """Run throughput/latency benchmarks. Use --kernel to benchmark a single kernel."""
     import sys
     sys.path.insert(0, "/root")
 
-    ext = _compile_one("fused_proj_conv_silu")
+    ext = _compile_one(kernel)
 
-    from bench.benchmark import run_bench
+    if kernel == "fused_proj_conv_silu":
+        from bench.bench_fused_proj_conv_silu import run_bench
+    elif kernel == "rmsnorm":
+        from bench.bench_rmsnorm import run_bench
+    elif kernel == "prefill":
+        from bench.bench_prefill import run_bench
+    elif kernel == "decode":
+        from bench.bench_decode import run_bench
+    else:
+        raise ValueError(f"Unknown kernel {kernel!r}")
+
     run_bench(ext)
 
 
@@ -183,6 +193,6 @@ def main(mode: str = "test", kernel: str = "all"):
     if mode == "test":
         test.remote(kernel=kernel)
     elif mode == "bench":
-        bench.remote()
+        bench.remote(kernel=kernel)
     else:
         raise ValueError(f"Unknown mode {mode!r}; use 'test' or 'bench'.")
