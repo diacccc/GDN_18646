@@ -1,4 +1,5 @@
 import argparse
+import math
 import torch
 import torch.nn as nn
 from torch.utils.cpp_extension import load
@@ -13,7 +14,8 @@ def load_extension():
         extra_cuda_cflags=[
             "-O3",
             "--use_fast_math",
-            "-lineinfo"
+            "-lineinfo",
+            "-arch=sm_80",
         ],
     )
 
@@ -91,51 +93,43 @@ def bench_ms(fn, warmup=5, iters=20):
 
     start = torch.cuda.Event(enable_timing=True)
     end = torch.cuda.Event(enable_timing=True)
+    o = None
     start.record()
     for _ in range(iters):
-        fn()
+        o = fn()
     end.record()
     torch.cuda.synchronize()
-    return start.elapsed_time(end) / iters
+    return o, start.elapsed_time(end) / iters
 
 
-def run_case(ext, B, T, Hh=16, dk=128, dv=256, dtype=torch.float32):
+def run_case(ext, B, T, Hh=16, dk=128, dv=256, dtype=torch.bfloat16):
     q = torch.randn(B, T, Hh, dk, device="cuda", dtype=dtype) * (dk ** -0.5)
     k = torch.randn(B, T, Hh, dk, device="cuda", dtype=dtype) * (dk ** -0.5)
     v = torch.randn(B, T, Hh, dv, device="cuda", dtype=dtype) * (dk ** -0.5)
     a = torch.randn(B, T, Hh, device="cuda", dtype=dtype)
-    b_logits = torch.randn(B, T, Hh, device="cuda", dtype=dtype)  # Renamed from b_gate
+    b_logits = torch.randn(B, T, Hh, device="cuda", dtype=dtype)
+    # A_log, dt_bias, mask, state_in always remain float32
     A_log = torch.zeros(Hh, device="cuda", dtype=torch.float32)
     dt_bias = torch.zeros(Hh, device="cuda", dtype=torch.float32)
     mask = torch.ones(B, T, device="cuda", dtype=torch.float32)
-    state_in = torch.zeros(B, Hh, dv, dk, device="cuda", dtype=torch.float32)  # Added state_in
+    state_in = torch.zeros(B, Hh, dv, dk, device="cuda", dtype=torch.float32)
     scale = 1.0
 
     with torch.no_grad():
-        o_custom = ext.forward(q.contiguous(), k.contiguous(), v.contiguous(),
-                               A_log.contiguous(), a.contiguous(), dt_bias.contiguous(),
-                               b_logits.contiguous(), mask.contiguous(), state_in.contiguous(),
-                               scale)
+        o_custom, t_ref = bench_ms(lambda: ref_prefill(q.contiguous(), k.contiguous(), v.contiguous(),
+                                               A_log.contiguous(), a.contiguous(), dt_bias.contiguous(),
+                                               b_logits.contiguous(), mask.contiguous(),
+                                               state_in.contiguous(), scale))
 
-        o_ref = ref_prefill(q.contiguous(), k.contiguous(), v.contiguous(),
-                            A_log.contiguous(), a.contiguous(), dt_bias.contiguous(),
-                            b_logits.contiguous(), mask.contiguous(), state_in=state_in,
-                            scale=scale)
+        o_ref, t_custom = bench_ms(lambda: ext.forward(q.contiguous(), k.contiguous(), v.contiguous(),
+                                               A_log.contiguous(), a.contiguous(), dt_bias.contiguous(),
+                                               b_logits.contiguous(), mask.contiguous(),
+                                               state_in.contiguous(), scale))
 
-    max_err = (o_custom.float() - o_ref.float()).abs().max().item()
-
-    t_ref = bench_ms(lambda: ref_prefill(q.contiguous(), k.contiguous(), v.contiguous(),
-                                           A_log.contiguous(), a.contiguous(), dt_bias.contiguous(),
-                                           b_logits.contiguous(), mask.contiguous(),
-                                           state_in.contiguous(), scale))
-
-    t_custom = bench_ms(lambda: ext.forward(q.contiguous(), k.contiguous(), v.contiguous(),
-                                           A_log.contiguous(), a.contiguous(), dt_bias.contiguous(),
-                                           b_logits.contiguous(), mask.contiguous(),
-                                           state_in.contiguous(), scale))
+        max_err = (o_custom.float() - o_ref.float()).abs().max().item()
 
     print(
-        f"B={B:>2} T={T:>5} H={Hh:>3} "
+        f"B={B:>2} T={T:>5} H={Hh:>3} dtype={str(dtype).split('.')[-1]:>9} "
         f"max_err={max_err:.3e} "
         f"custom={t_custom:8.4f} ms "
         f"ref={t_ref:8.4f} ms"
@@ -146,8 +140,8 @@ def run_case(ext, B, T, Hh=16, dk=128, dv=256, dtype=torch.float32):
 
 def parse_args():
     parser = argparse.ArgumentParser(description="GDN prefill test")
-    parser.add_argument("--B", type=int, default=[1, 8, 32, 64], help="Batch size")
-    parser.add_argument("--T", type=int, default=[1, 2048, 4096, 8192], help="Sequence length")
+    parser.add_argument("--B", type=int, nargs='+', default=[1, 8, 32, 64], help="Batch size")
+    parser.add_argument("--T", type=int, nargs='+', default=[1, 2048, 4096, 8192], help="Sequence length")
     return parser.parse_args()
 
 def main():

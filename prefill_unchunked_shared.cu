@@ -63,6 +63,8 @@ __global__ void prefill(
     /* State accumulator always in float32 for numerical stability */
     float S[K];
 
+    __shared__ float smem_k[K], smem_q[K], smem_v[V];
+
     if (state_in) {
         for (int ki = 0; ki < K; ki++)
             S[ki] = state_in[SI_IDX(b, h, vi, ki)];
@@ -78,6 +80,14 @@ __global__ void prefill(
         float g    = expf(-expf(A_log[h]) * softplus(x));
         float beta = sigmoid(static_cast<float>(b_logits[A_IDX(b, t, h)]));
 
+        __syncthreads();
+        // cooperative loading (q,k,v)
+        smem_v[vi] = static_cast<float>(v[V_IDX(b, t, h, vi)]);
+        for (int i = vi; i < K; i += V) {
+            smem_k[i] = static_cast<float>(k[K_IDX(b, t, h, i)]);
+            smem_q[i] = static_cast<float>(q[K_IDX(b, t, h, i)]);
+        }
+        __syncthreads();
 
         float old_v = 0.0f;
 
@@ -86,21 +96,20 @@ __global__ void prefill(
             S[ki] *= g;
 
             /* 2. old_v = dot(k, S) */
-            old_v = fmaf(static_cast<float>(k[K_IDX(b, t, h, ki)]), S[ki], old_v);
+            old_v = fmaf(smem_k[ki], S[ki], old_v);
         }
 
         /* 3. new_v = beta * v + (1 - beta) * old_v */
-        float new_v = beta * static_cast<float>(v[V_IDX(b, t, h, vi)])
-                    + (1.0f - beta) * old_v;
+        float new_v = beta * smem_v[vi] + (1.0f - beta) * old_v;
 
         float v_diff = m * (new_v - old_v);
         float o = 0.0f;
         for (int ki = 0; ki < K; ki++){
             /* 4. S += k * (new_v - old_v), masked */
-            S[ki] = fmaf(static_cast<float>(k[K_IDX(b, t, h, ki)]), v_diff, S[ki]);
+            S[ki] = fmaf(smem_k[ki], v_diff, S[ki]);
 
             /* 5. output = mask * scale * dot(q, S) */
-            o = fmaf(static_cast<float>(q[K_IDX(b, t, h, ki)]), S[ki], o);
+            o = fmaf(smem_q[ki], S[ki], o);
         }
 
         /* Convert float -> scalar_t on store */
