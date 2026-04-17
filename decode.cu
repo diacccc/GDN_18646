@@ -60,7 +60,7 @@ __device__ __forceinline__ float sigmoid_f32(float x) {
 // Template on dv so it can be instantiated for dv=128 or dv=256.
 // Threads-per-block = dv_val.  Each thread handles column j = threadIdx.x.
 
-#define PAIRS 2   // number of (b,h) pairs per block 
+#define PAIRS 1   // number of (b,h) pairs per block 
 
 template <int dv_val>
 __global__ void gdn_decode_kernel(
@@ -122,59 +122,36 @@ __global__ void gdn_decode_kernel(
 
         // ── Pass 1: 8-way unrolled, accumulate r_j ───────────────────────────
         float ks0=0.f, ks1=0.f, ks2=0.f, ks3=0.f;
-        float ks4=0.f, ks5=0.f, ks6=0.f, ks7=0.f;
-        for (int i = 0; i < DK; i += 8) {
+        for (int i = 0; i < DK; i += 4) {
             float s0 = S_ptr[bh_S + (i+0)*dv_val + j];
             float s1 = S_ptr[bh_S + (i+1)*dv_val + j];
             float s2 = S_ptr[bh_S + (i+2)*dv_val + j];
             float s3 = S_ptr[bh_S + (i+3)*dv_val + j];
-            float s4 = S_ptr[bh_S + (i+4)*dv_val + j];
-            float s5 = S_ptr[bh_S + (i+5)*dv_val + j];
-            float s6 = S_ptr[bh_S + (i+6)*dv_val + j];
-            float s7 = S_ptr[bh_S + (i+7)*dv_val + j];
             ks0 += k_sh[i+0]*s0;
             ks1 += k_sh[i+1]*s1;
             ks2 += k_sh[i+2]*s2;
             ks3 += k_sh[i+3]*s3;
-            ks4 += k_sh[i+4]*s4;
-            ks5 += k_sh[i+5]*s5;
-            ks6 += k_sh[i+6]*s6;
-            ks7 += k_sh[i+7]*s7;
         }
-        const float r_j     = g * (ks0+ks1+ks2+ks3+ks4+ks5+ks6+ks7);
+        const float r_j     = g * (ks0+ks1+ks2+ks3);
         const float delta_j = beta * (v_j - r_j);
 
         // ── Pass 2: 8-way unrolled, write S_out and accumulate o_j ───────────
         float o_j = 0.f;
-        for (int i = 0; i < DK; i += 8) {
+        for (int i = 0; i < DK; i += 4) {
             float s0 = S_ptr[bh_S + (i+0)*dv_val + j];
             float s1 = S_ptr[bh_S + (i+1)*dv_val + j];
             float s2 = S_ptr[bh_S + (i+2)*dv_val + j];
             float s3 = S_ptr[bh_S + (i+3)*dv_val + j];
-            float s4 = S_ptr[bh_S + (i+4)*dv_val + j];
-            float s5 = S_ptr[bh_S + (i+5)*dv_val + j];
-            float s6 = S_ptr[bh_S + (i+6)*dv_val + j];
-            float s7 = S_ptr[bh_S + (i+7)*dv_val + j];
             float sn0 = g*s0 + delta_j*k_sh[i+0];
             float sn1 = g*s1 + delta_j*k_sh[i+1];
             float sn2 = g*s2 + delta_j*k_sh[i+2];
             float sn3 = g*s3 + delta_j*k_sh[i+3];
-            float sn4 = g*s4 + delta_j*k_sh[i+4];
-            float sn5 = g*s5 + delta_j*k_sh[i+5];
-            float sn6 = g*s6 + delta_j*k_sh[i+6];
-            float sn7 = g*s7 + delta_j*k_sh[i+7];
             S_out_ptr[bh_S+(i+0)*dv_val+j] = sn0;
             S_out_ptr[bh_S+(i+1)*dv_val+j] = sn1;
             S_out_ptr[bh_S+(i+2)*dv_val+j] = sn2;
             S_out_ptr[bh_S+(i+3)*dv_val+j] = sn3;
-            S_out_ptr[bh_S+(i+4)*dv_val+j] = sn4;
-            S_out_ptr[bh_S+(i+5)*dv_val+j] = sn5;
-            S_out_ptr[bh_S+(i+6)*dv_val+j] = sn6;
-            S_out_ptr[bh_S+(i+7)*dv_val+j] = sn7;
             o_j += q_sh[i+0]*sn0 + q_sh[i+1]*sn1
-                 + q_sh[i+2]*sn2 + q_sh[i+3]*sn3
-                 + q_sh[i+4]*sn4 + q_sh[i+5]*sn5
-                 + q_sh[i+6]*sn6 + q_sh[i+7]*sn7;
+                 + q_sh[i+2]*sn2 + q_sh[i+3]*sn3;
         }
 
         o_ptr[bh_v + j] = scale * o_j;
