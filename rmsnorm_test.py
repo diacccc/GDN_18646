@@ -24,7 +24,6 @@ def load_extension(source="rmsnorm.cu", name="rmsnorm_ext_bench"):
         verbose=True,
         extra_cuda_cflags=[
             "-O3",
-            "--use_fast_math",
             "-lineinfo",
             "-gencode=arch=compute_80,code=sm_80",
         ],
@@ -78,10 +77,11 @@ class RMSNormFused(nn.Module):
         return self.norm(x)
 
 
-def rmsnorm_custom(ext, x, gamma, eps=1e-6):
+def rmsnorm_custom(ext, x, gamma, eps=1e-6, block_threads=256, rows_per_block=1):
     dim = x.shape[-1]
     x_flat = x.reshape(-1, dim).contiguous()
-    y_flat = ext.forward(x_flat, gamma.contiguous(), eps)
+    gamma = gamma.contiguous()
+    y_flat = ext.forward(x_flat, gamma, eps, block_threads, rows_per_block)
     return y_flat.reshape_as(x)
 
 
@@ -101,11 +101,15 @@ def benchmark_rmsnorm_suite(
     warmup=DEFAULT_WARMUP,
     iters=DEFAULT_ITERS,
     gamma_mode="ones",
+    block_threads=256,
+    rows_per_block=1,
 ):
     device = torch.device("cuda")
     elem_size = torch.empty((), dtype=dtype).element_size()
 
     fused_module = RMSNormFused(dim, eps=eps, dtype=dtype, device=device).eval()
+    fused_module_fp32 = RMSNormFused(dim, eps=eps, dtype=torch.float32, device=device).eval()
+
     results = []
 
     for B in B_vals:
@@ -115,13 +119,23 @@ def benchmark_rmsnorm_suite(
 
             with torch.no_grad():
                 fused_module.norm.weight.copy_(gamma)
+                fused_module_fp32.norm.weight.copy_(gamma.float())
                 y_base = rmsnorm_baseline(x, gamma, eps=eps)
                 y_fused = fused_module(x)
-                y_custom = rmsnorm_custom(ext, x, gamma, eps)
+                y_fused_fp32 = fused_module_fp32(x.float())
+                y_custom = rmsnorm_custom(
+                    ext,
+                    x,
+                    gamma,
+                    eps,
+                    block_threads=block_threads,
+                    rows_per_block=rows_per_block,
+                )
 
             max_err_fused = (y_fused.float() - y_base.float()).abs().max().item()
             max_err_custom = (y_custom.float() - y_base.float()).abs().max().item()
             max_err_custom_vs_fused = (y_custom.float() - y_fused.float()).abs().max().item()
+            max_err_custom_vs_fused_fp32 = (y_custom.float() - y_fused_fp32).abs().max().item()
 
             def run_base():
                 with torch.no_grad():
@@ -133,7 +147,14 @@ def benchmark_rmsnorm_suite(
 
             def run_custom():
                 with torch.no_grad():
-                    rmsnorm_custom(ext, x, gamma, eps)
+                    rmsnorm_custom(
+                        ext,
+                        x,
+                        gamma,
+                        eps,
+                        block_threads=block_threads,
+                        rows_per_block=rows_per_block,
+                    )
 
             lat_base = benchmark_fn(run_base, warmup=warmup, iters=iters)
             lat_fused = benchmark_fn(run_fused, warmup=warmup, iters=iters)
@@ -152,6 +173,9 @@ def benchmark_rmsnorm_suite(
                 baseline_ms=lat_base,
                 fused_ms=lat_fused,
                 custom_ms=lat_custom,
+                block_threads=block_threads,
+                rows_per_block=rows_per_block,
+                threads_per_row=block_threads // rows_per_block,
                 fused_speedup_vs_baseline=lat_base / lat_fused,
                 custom_speedup_vs_baseline=lat_base / lat_custom,
                 custom_speedup_vs_fused=lat_fused / lat_custom,
@@ -165,8 +189,11 @@ def benchmark_rmsnorm_suite(
                 f"baseline={lat_base:8.4f} ms  "
                 f"fused={lat_fused:8.4f} ms  "
                 f"custom={lat_custom:8.4f} ms  "
+                f"cfg=({block_threads} thds, {rows_per_block} rows)  "
                 f"custom/fused={lat_fused / lat_custom:5.2f}x  "
-                f"max_err={max_err_custom:.3e}"
+                f"err(custom,base)={max_err_custom:.3e}  "
+                f"err(custom,fused_bf16)={max_err_custom_vs_fused:.3e}  "
+                f"err(custom,fused_fp32)={max_err_custom_vs_fused_fp32:.3e}"
             )
 
     if pd is not None:
@@ -187,6 +214,8 @@ def parse_args():
     parser.add_argument("--warmup", type=int, default=DEFAULT_WARMUP)
     parser.add_argument("--iters", type=int, default=DEFAULT_ITERS)
     parser.add_argument("--gamma-mode", choices=["ones", "random"], default="ones")
+    parser.add_argument("--block-threads", type=int, default=256)
+    parser.add_argument("--rows-per-block", type=int, default=1)
     parser.add_argument("--csv", type=str, default="")
     return parser.parse_args()
 
@@ -200,6 +229,11 @@ def main():
     print(f"SMs: {props.multi_processor_count}")
 
     args = parse_args()
+    if args.D != DEFAULT_D:
+        raise ValueError(f"--D is fixed at {DEFAULT_D} for the current rmsnorm.cu kernel")
+    if args.block_threads % args.rows_per_block != 0:
+        raise ValueError("--block-threads must be divisible by --rows-per-block")
+
     ext = load_extension(source=args.source, name=args.module_name)
     df = benchmark_rmsnorm_suite(
         ext,
@@ -210,6 +244,8 @@ def main():
         warmup=args.warmup,
         iters=args.iters,
         gamma_mode=args.gamma_mode,
+        block_threads=args.block_threads,
+        rows_per_block=args.rows_per_block,
     )
 
     if pd is not None:
