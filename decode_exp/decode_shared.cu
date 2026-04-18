@@ -6,8 +6,7 @@
  *   - One CUDA thread block per (b, h) pair  → B*H blocks total
  *   - dv_val threads per block, one thread owns column S[:,j]
  *   - q, k ∈ R^{dk=128} and v ∈ R^{dv} loaded collaboratively → shared memory
- *   - Scalar params (a, b_gate, A_log, dt_bias, scale) loaded by thread 0 → shared
- *   - State S[:,j] (dk fp32) cached in registers — one global read, zero re-reads
+ *   - State S[b,h,:,:] (dk×dv fp32) stored in shared memory (A100: up to 163 KB)
  *   - Coalesced 128-byte transactions: consecutive threads hit consecutive dv columns
  *
  * Per-thread computation (column j = threadIdx.x):
@@ -21,29 +20,22 @@
 
 #include <cuda_bf16.h>
 #include <cuda_runtime.h>
-#include <math_constants.h>
 #include <stdio.h>
 
-// ── Architecture constants (must match Python side) ──────────────────────────
-#define DK  128
-#define DV  256
+#define DK 128
 
-// ── Device helpers ───────────────────────────────────────────────────────────
 __device__ __forceinline__ float bf16_to_f32(__nv_bfloat16 x) {
     return __bfloat162float(x);
 }
-
 __device__ __forceinline__ float softplus_f32(float x) {
     return (x > 20.f) ? x : log1pf(expf(x));
 }
-
 __device__ __forceinline__ float sigmoid_f32(float x) {
     return 1.f / (1.f + expf(-x));
 }
 
 // ── Main kernel ──────────────────────────────────────────────────────────────
 // One block per (b, h) pair. blockIdx.x = b * H + h.
-// Threads-per-block = dv_val. Each thread handles column j = threadIdx.x.
 
 template <int dv_val>
 __global__ void gdn_decode_kernel(
@@ -61,32 +53,35 @@ __global__ void gdn_decode_kernel(
     int                               H_val
 ) {
     const int j  = threadIdx.x;
-    const int bh = blockIdx.x;       // one block per (b,h) pair
+    const int bh = blockIdx.x;
     const int b  = bh / H_val;
     const int h  = bh % H_val;
 
     // ── Shared memory layout ─────────────────────────────────────────────────
-    // [0      .. DK-1  ] q       (DK floats)
-    // [DK     .. 2*DK-1] k       (DK floats)
-    // [2*DK   .. 2*DK+1] g, beta (2 floats)
+    // [0          .. DK-1              ] q          (DK floats)
+    // [DK         .. 2*DK-1            ] k          (DK floats)
+    // [2*DK       .. 2*DK+1            ] g, beta    (2 floats)
+    // [2*DK+2     .. 2*DK+2+DK*dv_val) ] S          (DK*dv_val floats)
     extern __shared__ float smem[];
     float* q_sh = smem;
     float* k_sh = smem + DK;
-    float* scal = smem + 2*DK;   // [0]=g, [1]=beta
+    float* scal = smem + 2*DK;        // [0]=g, [1]=beta
+    float* S_sh = smem + 2*DK + 2;   // DK * dv_val floats
 
     // ── Global memory offsets ────────────────────────────────────────────────
-    const int bh_qk = b * H_val * DK     + h * DK;
-    const int bh_v  = b * H_val * dv_val + h * dv_val;
-    const int bh_sc = bh;
+    const int bh_qk = b * H_val * DK      + h * DK;
+    const int bh_v  = b * H_val * dv_val  + h * dv_val;
+    const int bh_sc = bh;                              // b * H_val + h
     const int bh_S  = bh * DK * dv_val;
 
     // ── Load q, k into shared memory ─────────────────────────────────────────
+    // Only the first DK threads participate; dv_val >= DK always.
     if (j < DK) {
         q_sh[j] = bf16_to_f32(q_ptr[bh_qk + j]);
         k_sh[j] = bf16_to_f32(k_ptr[bh_qk + j]);
     }
 
-    // ── Scalars via thread 0 ─────────────────────────────────────────────────
+    // ── Scalars computed by thread 0 ─────────────────────────────────────────
     if (j == 0) {
         float a_val = bf16_to_f32(a_ptr[bh_sc]);
         float b_val = bf16_to_f32(b_ptr[bh_sc]);
@@ -94,37 +89,39 @@ __global__ void gdn_decode_kernel(
         scal[1] = sigmoid_f32(b_val);
     }
 
-    // ── Load S[:,j] into registers (one read per element, no re-reads) ───────
-    // Thread j owns column j: S_reg[i] = S[i, j] for i in [0, DK).
-    // Consecutive threads read consecutive addresses → coalesced 128-byte loads.
-    float S_reg[DK];
-    for (int i = 0; i < DK; i++) {
-        S_reg[i] = S_ptr[bh_S + i * dv_val + j];
+    // ── Load S into shared memory ─────────────────────────────────────────────
+    // Thread j loads row i column j for all i: S_sh[i*dv_val + j].
+    // Consecutive threads → consecutive global addresses → coalesced.
+    for (int i = 0; i < DK; ++i) {
+        S_sh[i * dv_val + j] = S_ptr[bh_S + i * dv_val + j];
     }
 
-    __syncthreads();   // wait for q_sh, k_sh, scal
+    __syncthreads();
 
     const float g    = scal[0];
     const float beta = scal[1];
     const float v_j  = bf16_to_f32(v_ptr[bh_v + j]);
 
-    // ── Pass 1: r_j = g * dot(k, S[:,j]) — all from registers ───────────────
-    float ks0 = 0.f;
+    // ── Pass 1: r_j = g * dot(k, S[:,j]) ────────────────────────────────────
+    float ks0=0;
     for (int i = 0; i < DK; i++) {
-        ks0 += k_sh[i] * S_reg[i];
+        ks0 += k_sh[i] * S_sh[(i)*dv_val + j];
     }
-    const float r_j     = g * ks0;
+    const float r_j     = g * (ks0);
     const float delta_j = beta * (v_j - r_j);
 
-    // ── Pass 2: update S, write S_out, accumulate o_j — all from registers ───
+    // ── Pass 2: update S, accumulate o_j, write S_out ────────────────────────
     float o_j = 0.f;
     for (int i = 0; i < DK; i++) {
-        float sn = g * S_reg[i] + delta_j * k_sh[i];
-        S_out_ptr[bh_S + i * dv_val + j] = sn;   // coalesced write
-        o_j += q_sh[i] * sn;
+        float sn0 = g*S_sh[(i)*dv_val+j] + delta_j*k_sh[i+0];
+
+        S_out_ptr[bh_S+(i)*dv_val+j] = sn0;
+
+        o_j += q_sh[i]*sn0;
     }
 
     o_ptr[bh_v + j] = scale * o_j;
+    // No trailing __syncthreads() needed — block is done.
 }
 
 // ── Launcher ─────────────────────────────────────────────────────────────────
@@ -145,15 +142,23 @@ void gdn_decode_cuda(
     int B, int H, int dv
 ) {
     const int BH = B * H;
-    dim3 grid(BH);                                    // one block per (b,h)
-    size_t smem = (2*DK + 2) * sizeof(float);        // q + k + g/beta
+    dim3 grid(BH);   // one block per (b, h) pair
 
     if (dv == 128) {
-        gdn_decode_kernel<128><<<grid, 128, smem>>>(
+        size_t smem = (2*DK + 2 + DK*128) * sizeof(float);  // ~65 KB
+        auto fn = gdn_decode_kernel<128>;
+        cudaFuncSetAttribute(fn,
+            cudaFuncAttributeMaxDynamicSharedMemorySize, smem);
+        fn<<<grid, 128, smem>>>(
             q, k, v, a_sc, b_sc, A_log, dt_bias, S_in,
             scale, o_out, S_out, H);
+
     } else if (dv == 256) {
-        gdn_decode_kernel<256><<<grid, 256, smem>>>(
+        size_t smem = (2*DK + 2 + DK*256) * sizeof(float);  // ~129 KB
+        auto fn = gdn_decode_kernel<256>;
+        cudaFuncSetAttribute(fn,
+            cudaFuncAttributeMaxDynamicSharedMemorySize, smem);
+        fn<<<grid, 256, smem>>>(
             q, k, v, a_sc, b_sc, A_log, dt_bias, S_in,
             scale, o_out, S_out, H);
     }

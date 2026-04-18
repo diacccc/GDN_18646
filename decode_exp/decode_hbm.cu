@@ -7,7 +7,7 @@
  *   - dv_val threads per block, one thread owns column S[:,j]
  *   - q, k ∈ R^{dk=128} and v ∈ R^{dv} loaded collaboratively → shared memory
  *   - Scalar params (a, b_gate, A_log, dt_bias, scale) loaded by thread 0 → shared
- *   - State S[:,j] (dk fp32) cached in registers — one global read, zero re-reads
+ *   - State S[b,h,:,:] (dk×dv fp32) streamed through registers from global memory
  *   - Coalesced 128-byte transactions: consecutive threads hit consecutive dv columns
  *
  * Per-thread computation (column j = threadIdx.x):
@@ -77,7 +77,7 @@ __global__ void gdn_decode_kernel(
     // ── Global memory offsets ────────────────────────────────────────────────
     const int bh_qk = b * H_val * DK     + h * DK;
     const int bh_v  = b * H_val * dv_val + h * dv_val;
-    const int bh_sc = bh;
+    const int bh_sc = bh;                            // b * H_val + h
     const int bh_S  = bh * DK * dv_val;
 
     // ── Load q, k into shared memory ─────────────────────────────────────────
@@ -94,37 +94,30 @@ __global__ void gdn_decode_kernel(
         scal[1] = sigmoid_f32(b_val);
     }
 
-    // ── Load S[:,j] into registers (one read per element, no re-reads) ───────
-    // Thread j owns column j: S_reg[i] = S[i, j] for i in [0, DK).
-    // Consecutive threads read consecutive addresses → coalesced 128-byte loads.
-    float S_reg[DK];
-    for (int i = 0; i < DK; i++) {
-        S_reg[i] = S_ptr[bh_S + i * dv_val + j];
-    }
-
-    __syncthreads();   // wait for q_sh, k_sh, scal
+    __syncthreads();
 
     const float g    = scal[0];
     const float beta = scal[1];
     const float v_j  = bf16_to_f32(v_ptr[bh_v + j]);
 
-    // ── Pass 1: r_j = g * dot(k, S[:,j]) — all from registers ───────────────
+    // ── Pass 1: accumulate r_j from global S ─────────────────────────────────
     float ks0 = 0.f;
     for (int i = 0; i < DK; i++) {
-        ks0 += k_sh[i] * S_reg[i];
+        ks0 += k_sh[i] * S_ptr[bh_S + i * dv_val + j];
     }
     const float r_j     = g * ks0;
     const float delta_j = beta * (v_j - r_j);
 
-    // ── Pass 2: update S, write S_out, accumulate o_j — all from registers ───
+    // ── Pass 2: write S_out and accumulate o_j ────────────────────────────────
     float o_j = 0.f;
     for (int i = 0; i < DK; i++) {
-        float sn = g * S_reg[i] + delta_j * k_sh[i];
-        S_out_ptr[bh_S + i * dv_val + j] = sn;   // coalesced write
+        float sn = g * S_ptr[bh_S + i * dv_val + j] + delta_j * k_sh[i];
+        S_out_ptr[bh_S + i * dv_val + j] = sn;
         o_j += q_sh[i] * sn;
     }
 
     o_ptr[bh_v + j] = scale * o_j;
+    // No trailing __syncthreads() — block is done.
 }
 
 // ── Launcher ─────────────────────────────────────────────────────────────────
