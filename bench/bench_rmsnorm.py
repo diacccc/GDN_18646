@@ -81,7 +81,7 @@ def run_bench(ext=None):
             N = B * T
             x = torch.randn(N, D, device="cuda", dtype=torch.bfloat16)
 
-            t_cuda  = bench_ms(lambda: ext.forward(x.contiguous(), gamma, eps))
+            t_cuda  = bench_ms(lambda: ext.forward(x.contiguous(), gamma, eps, 256, 1))
             t_ref   = bench_ms(lambda: ref_rmsnorm(x.contiguous(), gamma, eps))
             def run_fuse():
                 with torch.inference_mode():

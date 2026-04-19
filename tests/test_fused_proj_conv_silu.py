@@ -44,9 +44,9 @@ def _compile_extension():
 
 def run_case(ext, B, T, D=2048, D_out=2048, conv_k=4):
     """Compare CUDA kernel output against PyTorch reference. Returns True on pass."""
-    x      = torch.randn(B, T, D, device="cuda", dtype=torch.float32)
-    weight = torch.randn(D_out, D, device="cuda", dtype=torch.float32) * (D ** -0.5)
-    conv_w = torch.randn(D_out, conv_k, device="cuda", dtype=torch.float32) * 0.5
+    x      = torch.randn(B, T, D, device="cuda", dtype=torch.bfloat16)
+    weight = torch.randn(D_out, D, device="cuda", dtype=torch.bfloat16) * (D ** -0.5)
+    conv_w = torch.randn(D_out, conv_k, device="cuda", dtype=torch.bfloat16) * 0.5
 
     with torch.no_grad():
         o_cuda = ext.forward(x.contiguous(), weight.contiguous(), conv_w.contiguous())
@@ -56,7 +56,7 @@ def run_case(ext, B, T, D=2048, D_out=2048, conv_k=4):
     max_err  = diff.max().item()
     mean_err = diff.mean().item()
     rel_err  = (diff / (o_ref.float().abs() + 1e-8)).max().item()
-    passed   = max_err < 1e-2 and rel_err < 0.05   # float32 + fast_math → ~1e-3 typical
+    passed   = max_err < 5e-2 and rel_err < 0.1    # bfloat16 precision (~7 mantissa bits)
 
     status = "PASS" if passed else "FAIL"
     print(

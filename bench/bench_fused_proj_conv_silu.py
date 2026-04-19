@@ -72,9 +72,9 @@ def run_bench(ext=None):
 
     for B in [1, 8, 32, 64]:
         for T in [1, 2048, 4096, 8192]:
-            x      = torch.randn(B, T, D, device="cuda", dtype=torch.float32) * 0.02
-            weight = torch.randn(D_out, D, device="cuda", dtype=torch.float32) * (D ** -0.5)
-            conv_w = torch.randn(D_out, conv_k, device="cuda", dtype=torch.float32) * 0.5
+            x      = torch.randn(B, T, D, device="cuda", dtype=torch.bfloat16) * 0.02
+            weight = torch.randn(D_out, D, device="cuda", dtype=torch.bfloat16) * (D ** -0.5)
+            conv_w = torch.randn(D_out, conv_k, device="cuda", dtype=torch.bfloat16) * 0.5
 
             t_cuda = bench_ms(
                 lambda: ext.forward(x.contiguous(), weight.contiguous(), conv_w.contiguous()))
@@ -97,9 +97,9 @@ def run_bench(ext=None):
 
     for B in [1, 8, 32]:
         for T in [1, 2048, 4096]:
-            x      = torch.randn(B, T, D, device="cuda", dtype=torch.float32) * 0.02
-            weight = torch.randn(D_out_v, D, device="cuda", dtype=torch.float32) * (D ** -0.5)
-            conv_w = torch.randn(D_out_v, conv_k, device="cuda", dtype=torch.float32) * 0.5
+            x      = torch.randn(B, T, D, device="cuda", dtype=torch.bfloat16) * 0.02
+            weight = torch.randn(D_out_v, D, device="cuda", dtype=torch.bfloat16) * (D ** -0.5)
+            conv_w = torch.randn(D_out_v, conv_k, device="cuda", dtype=torch.bfloat16) * 0.5
 
             t_cuda = bench_ms(
                 lambda: ext.forward(x.contiguous(), weight.contiguous(), conv_w.contiguous()))

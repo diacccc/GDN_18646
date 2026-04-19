@@ -1,6 +1,5 @@
 ```bash
 pip install modal
-
 modal setup
 ```
 

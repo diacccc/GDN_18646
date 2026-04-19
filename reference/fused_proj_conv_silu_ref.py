@@ -15,25 +15,31 @@ def ref_proj_conv_silu(input: torch.Tensor,
     Reference: Linear projection -> causal depthwise conv1d -> SiLU.
 
     Args:
-        input  : [B, T, D]        float32
-        weight : [D_out, D]       float32
-        conv_w : [D_out, CONV_K]  float32   (CONV_K = 4)
+        input  : [B, T, D]        bfloat16
+        weight : [D_out, D]       bfloat16
+        conv_w : [D_out, CONV_K]  bfloat16   (CONV_K = 4)
 
     Returns:
-        output : [B, T, D_out]    float32
+        output : [B, T, D_out]    bfloat16
     """
+    dtype = input.dtype
+    # Upcast to float32 for reference computation
+    x  = input.float()
+    w  = weight.float()
+    cw = conv_w.float()
+
     # 1. Linear projection
-    proj = input @ weight.T                                        # [B, T, D_out]
+    proj = x @ w.T                                                 # [B, T, D_out]
 
     # 2. Causal depthwise conv1d
-    D_out = weight.size(0)
-    K = conv_w.size(1)
+    D_out = w.size(0)
+    K = cw.size(1)
     proj_t = proj.transpose(1, 2)                                  # [B, D_out, T]
     proj_padded = F.pad(proj_t, (K - 1, 0))                       # [B, D_out, T + K-1]
-    conv_weight = conv_w.unsqueeze(1)                              # [D_out, 1, K]
+    conv_weight = cw.unsqueeze(1)                                  # [D_out, 1, K]
     conv_out = F.conv1d(proj_padded, conv_weight, groups=D_out)   # [B, D_out, T]
     conv_out = conv_out.transpose(1, 2)                            # [B, T, D_out]
 
     # 3. SiLU activation
     output = F.silu(conv_out)
-    return output
+    return output.to(dtype)

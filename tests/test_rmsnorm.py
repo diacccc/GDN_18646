@@ -28,33 +28,27 @@ def run_case(ext, B, T, D=2048, eps=1e-6):
     x = torch.randn(B, T, D, device="cuda", dtype=torch.bfloat16)
     gamma = torch.ones(D, device="cuda", dtype=torch.bfloat16)
 
-    torch_rms = torch.nn.RMSNorm(D, eps=eps, elementwise_affine=True).to("cuda", torch.bfloat16)
-    torch.nn.init.ones_(torch_rms.weight)
+    # FP32 ground truth: torch.nn.RMSNorm in full float32
+    torch_rms_fp32 = torch.nn.RMSNorm(D, eps=eps, elementwise_affine=True,
+                                       device="cuda", dtype=torch.float32).eval()
+    torch.nn.init.ones_(torch_rms_fp32.weight)
 
     x_flat = x.reshape(-1, D).contiguous()
 
-    with torch.no_grad():
-        y_custom = ext.forward(x_flat, gamma, eps)
-        y_ref    = ref_rmsnorm(x_flat, gamma, eps)
-        y_torch  = torch_rms(x_flat)
+    with torch.inference_mode():
+        y_custom = ext.forward(x_flat, gamma, eps, 256, 2)  # BF16 output
+        y_fp32   = torch_rms_fp32(x_flat.float())           # FP32 ground truth
 
-    # vs custom ref
-    diff_ref = (y_custom.float() - y_ref.float()).abs()
-    max_err_ref = diff_ref.max().item()
-    rel_err_ref = (diff_ref / (y_ref.float().abs() + 1e-8)).max().item()
+    # Compare BF16 kernel output against FP32 reference (cast kernel output to fp32)
+    diff = (y_custom.float() - y_fp32).abs()
+    max_err = diff.max().item()
+    rel_err = (diff / (y_fp32.abs() + 1e-8)).max().item()
 
-    # vs torch.nn.RMSNorm
-    diff_torch = (y_custom.float() - y_torch.float()).abs()
-    max_err_torch = diff_torch.max().item()
-    rel_err_torch = (diff_torch / (y_torch.float().abs() + 1e-8)).max().item()
-
-    # BF16 has ~2 decimal digits of precision; use looser absolute threshold
-    passed = max_err_ref < 1e-2 and rel_err_ref < 0.05 and max_err_torch < 1e-2 and rel_err_torch < 0.05
+    # BF16 quantisation introduces ~1/128 relative error (~0.8%); allow up to 2%
+    passed = max_err < 5e-2 and rel_err < 0.02
 
     status = "PASS" if passed else "FAIL"
-    print(f"[{status}]  B={B:>2}  T={T:>5}  "
-          f"vs_ref: max={max_err_ref:.3e} rel={rel_err_ref:.3e}  "
-          f"vs_torch: max={max_err_torch:.3e} rel={rel_err_torch:.3e}")
+    print(f"[{status}]  B={B:>2}  T={T:>5}  max_err={max_err:.3e}  rel_err={rel_err:.3e}")
     return passed
 
 
