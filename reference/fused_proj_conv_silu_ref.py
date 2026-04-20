@@ -24,9 +24,9 @@ def ref_proj_conv_silu(input: torch.Tensor,
     """
     dtype = input.dtype
     # Upcast to float32 for reference computation
-    x  = input.float()
-    w  = weight.float()
-    cw = conv_w.float()
+    x  = input
+    w  = weight
+    cw = conv_w
 
     # 1. Linear projection
     proj = x @ w.T                                                 # [B, T, D_out]
