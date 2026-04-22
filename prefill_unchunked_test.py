@@ -1,15 +1,14 @@
 import argparse
 import math
 import torch
-import torch.nn as nn
 from torch.utils.cpp_extension import load
 from torch.nn import functional as F
 
 
-def load_extension():
+def load_extension(source_file: str):
     return load(
         name="prefill_ext",
-        sources=["prefill_unchunked.cu"],
+        sources=[source_file],
         verbose=True,
         extra_cuda_cflags=[
             "-O3",
@@ -33,39 +32,40 @@ def ref_prefill(
 ) -> torch.Tensor:
     """
     Returns:
-        output    [B, T, H, V]
-        state_out [B, H, V, K]
+        output    [B, H, T, V]
+        state_out [B, H, K, V]
     """
-    B, T, H, K = q.shape
+    B, H, T, K = q.shape
     V = v.shape[-1]
 
     if scale == 0.0:
         scale = 1.0 / math.sqrt(K)
 
     # --- Gate computation ---
-    x    = a.float() + dt_bias.float()                            # [B, T, H]
-    g    = torch.exp(-torch.exp(A_log.float()) * F.softplus(x))  # [B, T, H]
-    beta = torch.sigmoid(b_logits.float())                        # [B, T, H]
+    x    = a.float() + dt_bias.float()                            # [B, H, T]
+    A_log_bht = A_log.float().view(1, H, 1)
+    g    = torch.exp(-torch.exp(A_log_bht) * F.softplus(x))  # [B, H, T]
+    beta = torch.sigmoid(b_logits.float())                        # [B, H, T]
 
-    # Reshape mask for broadcasting against [B, T, H, V]
-    mask_HV = mask[:, :, None, None].float()                      # [B, T, 1, 1]
+    # Reshape mask for broadcasting against [B, H, T, V]
+    mask_HV = mask[:, None, :, None].float()                      # [B, 1, T, 1]
 
     # --- Initial state [B, H, K, V] (K-first internally) ---
     if state_in is not None:
-        S = state_in.float().transpose(-1, -2).clone()            # [B, H, V, K] -> [B, H, K, V]
+        S = state_in.float().clone()                              # [B, H, K, V]
     else:
         S = torch.zeros(B, H, K, V, dtype=torch.float32, device=q.device)
 
-    output = torch.zeros(B, T, H, V, dtype=q.dtype, device=q.device)
+    output = torch.zeros(B, H, T, V, dtype=q.dtype, device=q.device)
 
     for t in range(T):
-        g_t    = g   [:, t, :, None, None]   # [B, H, 1, 1]
-        beta_t = beta[:, t, :, None, None]   # [B, H, 1, 1]
+        g_t    = g   [:, :, t, None, None]   # [B, H, 1, 1]
+        beta_t = beta[:, :, t, None, None]   # [B, H, 1, 1]
         m_t    = mask[:, t,  None, None, None].float()  # [B, 1, 1, 1]
 
-        k_t = k[:, t, :, :, None].float()   # [B, H, K, 1]
-        q_t = q[:, t, :, :, None].float()   # [B, H, K, 1]
-        v_t = v[:, t, :, None, :].float()   # [B, H, 1, V]
+        k_t = k[:, :, t, :, None].float()   # [B, H, K, 1]
+        q_t = q[:, :, t, :, None].float()   # [B, H, K, 1]
+        v_t = v[:, :, t, None, :].float()   # [B, H, 1, V]
 
         # 1. Gate
         S = g_t * S                                               # [B, H, K, V]
@@ -81,9 +81,10 @@ def ref_prefill(
 
         # 5. output = scale * q^T @ S
         o = scale * (q_t.transpose(-2, -1) @ S)                  # [B, H, 1, V]
-        output[:, t] = (m_t.squeeze(-1) * o.squeeze(-2)).to(q.dtype)
+        output[:, :, t] = (m_t.squeeze(-1) * o.squeeze(-2)).to(q.dtype)
 
-    return output
+    state_out = S  # [B, H, K, V]
+    return output, state_out
 
 
 def bench_ms(fn, warmup=5, iters=20):
@@ -93,38 +94,60 @@ def bench_ms(fn, warmup=5, iters=20):
 
     start = torch.cuda.Event(enable_timing=True)
     end = torch.cuda.Event(enable_timing=True)
-    o = None
+    out = fn()
     start.record()
-    for _ in range(iters):
-        o = fn()
+    for _ in range(max(iters - 1, 0)):
+        out = fn()
     end.record()
     torch.cuda.synchronize()
-    return o, start.elapsed_time(end) / iters
+    return out, start.elapsed_time(end) / iters
 
 
 def run_case(ext, B, T, Hh=16, dk=128, dv=256, dtype=torch.bfloat16):
-    q = torch.randn(B, T, Hh, dk, device="cuda", dtype=dtype) * (dk ** -0.5)
-    k = torch.randn(B, T, Hh, dk, device="cuda", dtype=dtype) * (dk ** -0.5)
-    v = torch.randn(B, T, Hh, dv, device="cuda", dtype=dtype) * (dk ** -0.5)
-    a = torch.randn(B, T, Hh, device="cuda", dtype=dtype)
-    b_logits = torch.randn(B, T, Hh, device="cuda", dtype=dtype)
-    # A_log, dt_bias, mask, state_in always remain float32
+    q = torch.randn(B, Hh, T, dk, device="cuda", dtype=dtype) * (dk ** -0.5)
+    k = torch.randn(B, Hh, T, dk, device="cuda", dtype=dtype) * (dk ** -0.5)
+    v = torch.randn(B, Hh, T, dv, device="cuda", dtype=dtype) * (dk ** -0.5)
+    a = torch.randn(B, Hh, T, device="cuda", dtype=dtype)
+    b_logits = torch.randn(B, Hh, T, device="cuda", dtype=dtype)
+
     A_log = torch.zeros(Hh, device="cuda", dtype=torch.float32)
-    dt_bias = torch.zeros(Hh, device="cuda", dtype=torch.float32)
+    dt_bias = torch.tensor(0.0, device="cuda", dtype=torch.float32)
     mask = torch.ones(B, T, device="cuda", dtype=torch.float32)
-    state_in = torch.zeros(B, Hh, dv, dk, device="cuda", dtype=torch.float32)
+    state_in_ext = torch.empty(0, device="cuda", dtype=torch.float32)
     scale = 1.0
 
     with torch.no_grad():
-        o_custom, t_ref = bench_ms(lambda: ref_prefill(q.contiguous(), k.contiguous(), v.contiguous(),
-                                               A_log.contiguous(), a.contiguous(), dt_bias.contiguous(),
-                                               b_logits.contiguous(), mask.contiguous(),
-                                               state_in.contiguous(), scale))
+        ref_ret, t_ref = bench_ms(
+            lambda: ref_prefill(
+                q.contiguous(),
+                k.contiguous(),
+                v.contiguous(),
+                A_log.contiguous(),
+                a.contiguous(),
+                dt_bias.contiguous(),
+                b_logits.contiguous(),
+                mask.contiguous(),
+                state_in=None,
+                scale=scale,
+            )
+        )
+        o_ref, state_ref = ref_ret
 
-        o_ref, t_custom = bench_ms(lambda: ext.forward(q.contiguous(), k.contiguous(), v.contiguous(),
-                                               A_log.contiguous(), a.contiguous(), dt_bias.contiguous(),
-                                               b_logits.contiguous(), mask.contiguous(),
-                                               state_in.contiguous(), scale))
+        custom_ret, t_custom = bench_ms(
+            lambda: ext.prefill(
+                q.contiguous(),
+                k.contiguous(),
+                v.contiguous(),
+                A_log.contiguous(),
+                a.contiguous(),
+                float(dt_bias.item()),
+                b_logits.contiguous(),
+                mask.contiguous(),
+                state_in_ext,
+                scale,
+            )
+        )
+        o_custom, state_custom = custom_ret
 
         max_err = (o_custom.float() - o_ref.float()).abs().max().item()
 
@@ -135,23 +158,24 @@ def run_case(ext, B, T, Hh=16, dk=128, dv=256, dtype=torch.bfloat16):
         f"ref={t_ref:8.4f} ms"
     )
 
-    del q, k, v, a, b_logits, A_log, dt_bias, mask, state_in
+    del q, k, v, a, b_logits, A_log, dt_bias, mask, state_in_ext, state_ref, state_custom
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="GDN prefill test")
+    parser = argparse.ArgumentParser(description="GDN unchunked prefill comparison test")
+    parser.add_argument("filename", type=str, nargs='?', default="prefill_unchunked.cu", help="CUDA source filename to compile")
     parser.add_argument("--B", type=int, nargs='+', default=[1, 8, 32, 64], help="Batch size")
-    parser.add_argument("--T", type=int, nargs='+', default=[1, 2048, 4096, 8192], help="Sequence length")
+    parser.add_argument("--T", type=int, nargs='+', default=[64, 1024, 2048, 4096], help="Sequence length")
     return parser.parse_args()
+
 
 def main():
     if not torch.cuda.is_available():
         print("CUDA is required to run this test.")
         return
 
-    ext = load_extension()
-
     args = parse_args()
+    ext = load_extension(args.filename)
     for B in args.B:
         for T in args.T:
             run_case(ext, B, T)
