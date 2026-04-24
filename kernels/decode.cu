@@ -3,10 +3,10 @@
  * Fused CUDA kernel for the Gated DeltaNet (GDN) decode recurrence (T=1).
  *
  * Design:
- *   - One CUDA thread block per (b, h) pair  → B*H blocks total
+ *   - One CUDA thread block per (b, h) pair  -> B*H blocks total
  *   - dv_val threads per block, one thread owns column S[:,j]
- *   - q, k ∈ R^{dk=128} and v ∈ R^{dv} loaded collaboratively → shared memory
- *   - Scalar params (a, b_gate, A_log, dt_bias, scale) loaded by thread 0 → shared
+ *   - q, k ∈ R^{dk=128} and v ∈ R^{dv} loaded collaboratively -> shared memory
+ *   - Scalar params (a, b_gate, A_log, dt_bias, scale) loaded by thread 0 -> shared
  *   - State S[:,j] (dk fp32) cached in registers — one global read, zero re-reads
  *   - Coalesced 128-byte transactions: consecutive threads hit consecutive dv columns
  *
@@ -96,7 +96,7 @@ __global__ void gdn_decode_kernel(
 
     // ── Load S[:,j] into registers (one read per element, no re-reads) ───────
     // Thread j owns column j: S_reg[i] = S[i, j] for i in [0, DK).
-    // Consecutive threads read consecutive addresses → coalesced 128-byte loads.
+    // Consecutive threads read consecutive addresses -> coalesced 128-byte loads.
     float S_reg[DK];
     for (int i = 0; i < DK; i++) {
         S_reg[i] = S_ptr[bh_S + i * dv_val + j];

@@ -31,8 +31,8 @@ def ref_prefill(q, k, v, A_log, a, dt_bias, b_logits, mask,
         b_logits : [B, H, T]    bfloat16 or float32
         mask     : [B, T]       float32
         state_in : [B, H, K, V] float32 or None
-        scale    : float  (0.0 → 1/sqrt(K))
-        chunk_size: int or None  (None → single chunk over full T)
+        scale    : float  (0.0 -> 1/sqrt(K))
+        chunk_size: int or None  (None -> single chunk over full T)
 
     Returns:
         output   : [B, H, T, V]  same dtype as q

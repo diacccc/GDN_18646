@@ -38,11 +38,11 @@ def ref_prefill(
     unchunked ref_prefill, computed chunk-by-chunk via WY decomposition.
 
     Per-token recurrence (identical to unchunked ref_prefill):
-        S     ← g_t * S                          # 1. gate state
-        old_v ← k_t^T @ S                        # 2. retrieve
-        new_v ← beta_t * v_t + (1-beta_t)*old_v  # 3. interpolate
-        S     ← S + m_t * k_t @ (new_v - old_v)  # 4. rank-1 update
-        o_t   ← m_t * scale * q_t^T @ S          # 5. output
+        S     <- g_t * S                          # 1. gate state
+        old_v <- k_t^T @ S                        # 2. retrieve
+        new_v <- beta_t * v_t + (1-beta_t)*old_v  # 3. interpolate
+        S     <- S + m_t * k_t @ (new_v - old_v)  # 4. rank-1 update
+        o_t   <- m_t * scale * q_t^T @ S          # 5. output
     """
     B, H, T, K = q.shape
     BT = chunk_size or T
@@ -96,7 +96,7 @@ def ref_prefill(
         [q, k, k_beta, v_beta, log_g.unsqueeze(-1)],
     )
 
-    # Cumulative log-gate within each chunk → used in place of the sequential
+    # Cumulative log-gate within each chunk -> used in place of the sequential
     # product g_0*g_1*…*g_t that appears in the unchunked recurrence
     log_g_cum = log_g.squeeze(-1).cumsum(-1)   # [B, H, n, BT]
     g_cum     = log_g_cum.exp()[..., None]      # [B, H, n, BT, 1]
@@ -117,10 +117,10 @@ def ref_prefill(
                              * WY[..., :i, :i].clone()).sum(-2))
     WY = WY + torch.eye(BT, dtype=torch.float, device=q.device)
 
-    # WY @ v_beta  →  effective (new_v - old_v) for each position, intra-chunk only
+    # WY @ v_beta  ->  effective (new_v - old_v) for each position, intra-chunk only
     new_v_minus_old_v_intra = WY @ v_beta          # [B, H, n, BT, V]
 
-    # WY @ (k_beta * g_cum)  →  used to subtract the cross-chunk S contribution
+    # WY @ (k_beta * g_cum)  ->  used to subtract the cross-chunk S contribution
     # from old_v, so the total (new_v - old_v) is correct when S ≠ 0
     k_beta_gcum = WY @ (k_beta * g_cum)            # [B, H, n, BT, K]
 

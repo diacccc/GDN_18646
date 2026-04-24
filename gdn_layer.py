@@ -4,13 +4,13 @@ GDN (Gated Delta Net) layer: PyTorch-baseline and custom-CUDA-kernel versions.
 Architecture (prefill mode, T tokens):
   Input [B, T, D]
     └─ RMSNorm
-    └─ Q projection  (linear + causal-conv1d + SiLU)  → [B, H, T, DK]
-    └─ K projection  (linear + causal-conv1d + SiLU)  → [B, H, T, DK]
-    └─ V projection  (linear + causal-conv1d + SiLU)  → [B, H, T, DV]
-    └─ a linear                                        → [B, H, T]  (gate)
-    └─ b linear                                        → [B, H, T]  (beta)
+    └─ Q projection  (linear + causal-conv1d + SiLU)  -> [B, H, T, DK]
+    └─ K projection  (linear + causal-conv1d + SiLU)  -> [B, H, T, DK]
+    └─ V projection  (linear + causal-conv1d + SiLU)  -> [B, H, T, DV]
+    └─ a linear                                        -> [B, H, T]  (gate)
+    └─ b linear                                        -> [B, H, T]  (beta)
     └─ Gated Delta-Net prefill recurrence
-    └─ Output projection                               → [B, T, D]
+    └─ Output projection                               -> [B, T, D]
 """
 
 import torch
@@ -74,10 +74,10 @@ class GDNLayerBaseline:
         if mask is None:
             mask = x.new_ones(B, T, dtype=torch.float32)
 
-        # 1. RMSNorm  [B*T, D] → [B, T, D]
+        # 1. RMSNorm  [B*T, D] -> [B, T, D]
         xn = ref_rmsnorm(x.reshape(B*T, D), w['norm_gamma']).reshape(B, T, D)
 
-        # 2. Q / K / V projections  →  [B, H, T, D_head]
+        # 2. Q / K / V projections  ->  [B, H, T, D_head]
         def proj(W, cw, dh):
             out = ref_proj_conv_silu(xn, W, cw)            # [B, T, H*dh]
             return out.reshape(B, T, H, dh).transpose(1, 2).contiguous()
@@ -86,17 +86,17 @@ class GDNLayerBaseline:
         k = proj(w['W_k'], w['conv_k'], DK)
         v = proj(w['W_v'], w['conv_v'], DV)
 
-        # 3. a / b gate projections  →  [B, H, T]
+        # 3. a / b gate projections  ->  [B, H, T]
         a = (xn @ w['W_a'].T).transpose(1, 2).contiguous()
         b = (xn @ w['W_b'].T).transpose(1, 2).contiguous()
 
-        # 4. Prefill recurrence  →  o [B, H, T, DV] float32
+        # 4. Prefill recurrence  ->  o [B, H, T, DV] float32
         o, _ = ref_prefill(
             q, k, v, w['A_log'], a, w['dt_bias'], b, mask,
             state_in=None, scale=self.scale,
         )
 
-        # 5. Output projection  →  [B, T, D]
+        # 5. Output projection  ->  [B, T, D]
         return o.to(x.dtype).transpose(1, 2).reshape(B, T, H*DV) @ w['W_o'].T
 
 
@@ -128,12 +128,12 @@ class GDNLayerCustom:
         if mask is None:
             mask = x.new_ones(B, T, dtype=torch.float32)
 
-        # 1. RMSNorm  (kernel: [R, D] bf16 → bf16)
+        # 1. RMSNorm  (kernel: [R, D] bf16 -> bf16)
         xn = e['rmsnorm'].forward(
             x.reshape(B*T, D), w['norm_gamma'], 1e-6, 256, 2
         ).reshape(B, T, D)
 
-        # 2. Q / K / V projections  →  [B, H, T, D_head]
+        # 2. Q / K / V projections  ->  [B, H, T, D_head]
         def proj(W, cw, dh):
             out = e['proj'].forward(
                 xn.contiguous(), W.contiguous(), cw.contiguous()
@@ -144,11 +144,11 @@ class GDNLayerCustom:
         k = proj(w['W_k'], w['conv_k'], DK)
         v = proj(w['W_v'], w['conv_v'], DV)
 
-        # 3. a / b gate projections  →  [B, H, T]  (plain matmul; no custom kernel)
+        # 3. a / b gate projections  ->  [B, H, T]  (plain matmul; no custom kernel)
         a = (xn @ w['W_a'].T).transpose(1, 2).contiguous()
         b = (xn @ w['W_b'].T).transpose(1, 2).contiguous()
 
-        # 4. Prefill recurrence  →  o [B, H, T, DV]
+        # 4. Prefill recurrence  ->  o [B, H, T, DV]
         empty_state = torch.empty(0, device=x.device, dtype=torch.float32)
         o, _ = e['prefill'].prefill(
             q, k, v,
@@ -156,5 +156,5 @@ class GDNLayerCustom:
             b, mask, empty_state, self.scale,
         )
 
-        # 5. Output projection  →  [B, T, D]
+        # 5. Output projection  ->  [B, T, D]
         return o.transpose(1, 2).reshape(B, T, H*DV) @ w['W_o'].T

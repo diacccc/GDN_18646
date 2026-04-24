@@ -19,7 +19,7 @@
  * 3. Single __syncthreads per K-iter, placed *after* wait_group and
  *    *before* MMA.  Loop order is:
  *       wait_group<PIPE-2>
- *       __syncthreads          ← visibility + ensures prev-iter MMA done
+ *       __syncthreads          <- visibility + ensures prev-iter MMA done
  *       MMA on stage k%PIPE
  *       issue stage (k+PIPE-1)%PIPE (if in range)
  *       cp_async_commit
@@ -31,7 +31,7 @@
  * ── Tile geometry ───────────────────────────────────────────────────────
  *   TILE_T     = 125;  TILE_C = 64 ;  BK = 32
  *   GEMM_T_PAD = 128;  PIPE   =  3  ;  M_FRAGS = 2
- *   SMEM_LDA   = SMEM_LDB = 40 bf16 (BK + 8 pad → conflict-free ldmatrix)
+ *   SMEM_LDA   = SMEM_LDB = 40 bf16 (BK + 8 pad -> conflict-free ldmatrix)
  *
  * ── Shared memory (overlaid: pipeline bufs ↔ projection buffer) ────────
  *   smem_cw       : 64 ×  4 × 4                  =  1024 B  (always live)
@@ -42,8 +42,8 @@
  *     smem_proj   : 128 × 64 × 4                 = 32768 B  (conv phase)
  *   }                                    total  ≈ 47 KB
  *
- *   A tile: 128×32 bf16 → 512 × 16-B chunks → 4 passes × 128 threads.
- *   B tile:  64×32 bf16 → 256 × 16-B chunks → 2 passes × 128 threads.
+ *   A tile: 128×32 bf16 -> 512 × 16-B chunks -> 4 passes × 128 threads.
+ *   B tile:  64×32 bf16 -> 256 × 16-B chunks -> 2 passes × 128 threads.
  *
  * ── Requirements ────────────────────────────────────────────────────────
  *   • Compute Capability ≥ 8.0
@@ -144,15 +144,15 @@ void fused_proj_conv_silu_kernel(
     const int K_TILES = D / BK;
 
     /* ── Cooperative load macro (all 128 threads) ────────────────────── *
-     *   A tile: 128 × 32 bf16 = 8192 B = 512 × 16-B chunks → 4 passes.
-     *   B tile:  64 × 32 bf16 = 4096 B = 256 × 16-B chunks → 2 passes.
-     *   Rows outside the valid time range get nb=0 → cp.async zero-fills. */
+     *   A tile: 128 × 32 bf16 = 8192 B = 512 × 16-B chunks -> 4 passes.
+     *   B tile:  64 × 32 bf16 = 4096 B = 256 × 16-B chunks -> 2 passes.
+     *   Rows outside the valid time range get nb=0 -> cp.async zero-fills. */
     #define ISSUE_STAGE(stage, k_val)                                           \
     {                                                                           \
         nv_bfloat16* sA = smem_A + (stage) * GEMM_T_PAD * SMEM_LDA;            \
         nv_bfloat16* sB = smem_B + (stage) * TILE_C    * SMEM_LDB;             \
         int _bk = (k_val) * BK;                                                \
-        /* A-tile: 128 rows × 4 chunks/row → 4 passes of 128 threads */        \
+        /* A-tile: 128 rows × 4 chunks/row -> 4 passes of 128 threads */        \
         _Pragma("unroll")                                                       \
         for (int pass = 0; pass < 4; pass++) {                                  \
             int cid    = tid + pass * THREADS;     /* 0..511            */      \
@@ -167,7 +167,7 @@ void fused_proj_conv_silu_kernel(
                 input + ((size_t)b * T + safe_t) * D + _bk + off,              \
                 nbA);                                                           \
         }                                                                       \
-        /* B-tile: 64 rows × 4 chunks/row → 2 passes of 128 threads */         \
+        /* B-tile: 64 rows × 4 chunks/row -> 2 passes of 128 threads */         \
         _Pragma("unroll")                                                       \
         for (int pass = 0; pass < 2; pass++) {                                  \
             int cid    = tid + pass * THREADS;     /* 0..255            */      \
