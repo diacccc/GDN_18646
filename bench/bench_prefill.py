@@ -11,7 +11,6 @@ Via Modal:
 
 import sys
 import os
-import math
 import torch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -26,8 +25,8 @@ def _compile_extension():
                               "kernels")
     return load(
         name="prefill_ext",
-        sources=[os.path.join(kernel_dir, "prefill_unchunked.cu")],
-        extra_cuda_cflags=["-O3", "--use_fast_math", "-lineinfo"],
+        sources=[os.path.join(kernel_dir, "prefill_chunked.cu")],
+        extra_cuda_cflags=["-O3", "--use_fast_math", "-lineinfo", "-arch=sm_80"],
         verbose=True,
     )
 
@@ -52,35 +51,42 @@ def run_bench(ext=None):
     if ext is None:
         ext = _compile_extension()
 
-    Hh   = 16
-    dk   = 128
-    dv   = 256
+    chunk_size = int(ext.C_DIM)
+    Hh    = 16
+    dk    = 128
+    dv    = 256
     scale = 1.0
+    dtype = torch.bfloat16
 
     print("=" * 80)
-    print(f"Benchmark: Prefill  H={Hh}  dk={dk}  dv={dv}")
+    print(f"Benchmark: Prefill  H={Hh}  dk={dk}  dv={dv}  chunk_size={chunk_size}")
     print("=" * 80)
     print(f"{'B':>4}  {'T':>6}  {'cuda (ms)':>10}  {'ref (ms)':>10}  {'speedup':>8}")
     print("-" * 50)
 
     for B in [1, 4, 8]:
-        for T in [1, 64, 256, 512, 1024, 2048]:
-            q        = torch.randn(B, T, Hh, dk, device="cuda", dtype=torch.float32) * (dk ** -0.5)
-            k        = torch.randn(B, T, Hh, dk, device="cuda", dtype=torch.float32) * (dk ** -0.5)
-            v        = torch.randn(B, T, Hh, dv, device="cuda", dtype=torch.float32) * (dk ** -0.5)
-            a        = torch.randn(B, T, Hh, device="cuda", dtype=torch.float32)
-            b_logits = torch.randn(B, T, Hh, device="cuda", dtype=torch.float32)
+        for T in [64, 256, 512, 1024, 2048]:
+            if T % chunk_size != 0:
+                print(f"{B:>4}  {T:>6}  skipped (T not divisible by chunk_size={chunk_size})")
+                continue
+
+            q        = torch.randn(B, Hh, T, dk, device="cuda", dtype=dtype) * (dk ** -0.5)
+            k        = torch.randn(B, Hh, T, dk, device="cuda", dtype=dtype) * (dk ** -0.5)
+            v        = torch.randn(B, Hh, T, dv, device="cuda", dtype=dtype) * (dk ** -0.5)
+            a        = torch.randn(B, Hh, T, device="cuda", dtype=dtype)
+            b_logits = torch.randn(B, Hh, T, device="cuda", dtype=dtype)
             A_log    = torch.zeros(Hh, device="cuda", dtype=torch.float32)
-            dt_bias  = torch.zeros(Hh, device="cuda", dtype=torch.float32)
+            dt_bias  = torch.tensor(0.0, device="cuda", dtype=torch.float32)
             mask     = torch.ones(B, T, device="cuda", dtype=torch.float32)
-            state_in = torch.zeros(B, Hh, dv, dk, device="cuda", dtype=torch.float32)
+            state_in_ext = torch.empty(0, device="cuda", dtype=torch.float32)
 
             def cuda_fn():
-                return ext.forward(
+                return ext.prefill(
                     q.contiguous(), k.contiguous(), v.contiguous(),
-                    A_log.contiguous(), a.contiguous(), dt_bias.contiguous(),
+                    A_log.contiguous(), a.contiguous(),
+                    float(dt_bias.item()),
                     b_logits.contiguous(), mask.contiguous(),
-                    state_in.contiguous(), scale,
+                    state_in_ext, scale,
                 )
 
             def ref_fn():
@@ -88,7 +94,7 @@ def run_bench(ext=None):
                     q.contiguous(), k.contiguous(), v.contiguous(),
                     A_log.contiguous(), a.contiguous(), dt_bias.contiguous(),
                     b_logits.contiguous(), mask.contiguous(),
-                    state_in=state_in, scale=scale,
+                    state_in=None, scale=scale,
                 )
 
             t_cuda = bench_ms(cuda_fn)
@@ -96,7 +102,7 @@ def run_bench(ext=None):
 
             print(f"{B:>4}  {T:>6}  {t_cuda:>10.4f}  {t_ref:>10.4f}  {t_ref/t_cuda:>7.2f}x")
 
-            del q, k, v, a, b_logits, A_log, dt_bias, mask, state_in
+            del q, k, v, a, b_logits, A_log, dt_bias, mask, state_in_ext
             torch.cuda.empty_cache()
         print()
 
