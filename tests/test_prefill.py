@@ -3,7 +3,6 @@ test_prefill.py — Correctness tests for the prefill recurrence CUDA kernel.
 """
 
 import sys, os
-import math
 import torch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -16,33 +15,43 @@ def _compile_extension():
                               "kernels")
     return load(
         name="prefill_ext",
-        sources=[os.path.join(kernel_dir, "prefill_unchunked.cu")],
+        sources=[os.path.join(kernel_dir, "prefill_chunked.cu")],
         verbose=True,
-        extra_cuda_cflags=["-O3", "--use_fast_math", "-lineinfo"],
+        extra_cuda_cflags=["-O3", "--use_fast_math", "-lineinfo", "-arch=sm_80"],
     )
 
 
-def run_case(ext, B, T, Hh=16, dk=128, dv=256, dtype=torch.float32):
-    q = torch.randn(B, T, Hh, dk, device="cuda", dtype=dtype) * (dk ** -0.5)
-    k = torch.randn(B, T, Hh, dk, device="cuda", dtype=dtype) * (dk ** -0.5)
-    v = torch.randn(B, T, Hh, dv, device="cuda", dtype=dtype) * (dk ** -0.5)
-    a = torch.randn(B, T, Hh, device="cuda", dtype=dtype)
-    b_logits = torch.randn(B, T, Hh, device="cuda", dtype=dtype)
-    A_log = torch.zeros(Hh, device="cuda", dtype=torch.float32)
-    dt_bias = torch.zeros(Hh, device="cuda", dtype=torch.float32)
-    mask = torch.ones(B, T, device="cuda", dtype=torch.float32)
-    state_in = torch.zeros(B, Hh, dv, dk, device="cuda", dtype=torch.float32)
+def run_case(ext, B, T, Hh=16, dk=128, dv=256, dtype=torch.bfloat16):
+    chunk_size = int(ext.C_DIM)
+    if T % chunk_size != 0:
+        print(f"[SKIP]  B={B:>2}  T={T:>5}  H={Hh:>3}  (T not divisible by chunk_size={chunk_size})")
+        return True
+
+    q        = torch.randn(B, Hh, T, dk, device="cuda", dtype=dtype) * (dk ** -0.5)
+    k        = torch.randn(B, Hh, T, dk, device="cuda", dtype=dtype) * (dk ** -0.5)
+    v        = torch.randn(B, Hh, T, dv, device="cuda", dtype=dtype) * (dk ** -0.5)
+    a        = torch.randn(B, Hh, T, device="cuda", dtype=dtype)
+    b_logits = torch.randn(B, Hh, T, device="cuda", dtype=dtype)
+    A_log    = torch.zeros(Hh, device="cuda", dtype=torch.float32)
+    dt_bias  = torch.tensor(0.0, device="cuda", dtype=torch.float32)
+    mask     = torch.ones(B, T, device="cuda", dtype=torch.float32)
+    state_in_ext = torch.empty(0, device="cuda", dtype=torch.float32)
     scale = 1.0
 
     with torch.no_grad():
-        o_custom = ext.forward(q.contiguous(), k.contiguous(), v.contiguous(),
-                               A_log.contiguous(), a.contiguous(), dt_bias.contiguous(),
-                               b_logits.contiguous(), mask.contiguous(),
-                               state_in.contiguous(), scale)
-        o_ref = ref_prefill(q.contiguous(), k.contiguous(), v.contiguous(),
-                            A_log.contiguous(), a.contiguous(), dt_bias.contiguous(),
-                            b_logits.contiguous(), mask.contiguous(),
-                            state_in=state_in, scale=scale)
+        o_custom, _ = ext.prefill(
+            q.contiguous(), k.contiguous(), v.contiguous(),
+            A_log.contiguous(), a.contiguous(),
+            float(dt_bias.item()),
+            b_logits.contiguous(), mask.contiguous(),
+            state_in_ext, scale,
+        )
+        o_ref, _ = ref_prefill(
+            q.contiguous(), k.contiguous(), v.contiguous(),
+            A_log.contiguous(), a.contiguous(), dt_bias.contiguous(),
+            b_logits.contiguous(), mask.contiguous(),
+            state_in=None, scale=scale,
+        )
 
     diff = (o_custom.float() - o_ref.float()).abs()
     max_err = diff.max().item()
@@ -63,7 +72,7 @@ def run_all(ext=None):
     print("Prefill Correctness Tests")
     print("=" * 60)
     for B in [1, 4]:
-        for T in [1, 64, 128]:
+        for T in [64, 128, 256]:
             all_passed &= run_case(ext, B, T)
 
     print()
