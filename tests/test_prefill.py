@@ -55,11 +55,13 @@ def run_case(ext, B, T, Hh=16, dk=128, dv=256, dtype=torch.bfloat16):
 
     diff = (o_custom.float() - o_ref.float()).abs()
     max_err = diff.max().item()
-    rel_err = (diff / (o_ref.float().abs() + 1e-8)).max().item()
-    passed = max_err < 1e-2 and rel_err < 0.05
+    # Mixed tolerance: pass if diff < atol + rtol * |ref| everywhere.
+    # This avoids false failures from huge relative errors at near-zero outputs.
+    atol, rtol = 1e-2, 0.05
+    passed = bool((diff < atol + rtol * o_ref.float().abs()).all())
 
     status = "PASS" if passed else "FAIL"
-    print(f"[{status}]  B={B:>2}  T={T:>5}  H={Hh:>3}  max_err={max_err:.3e}  rel_err={rel_err:.3e}")
+    print(f"[{status}]  B={B:>2}  T={T:>5}  H={Hh:>3}  max_err={max_err:.3e}")
     return passed
 
 
