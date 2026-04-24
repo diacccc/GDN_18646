@@ -1,0 +1,25 @@
+# Build artifacts
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+build/
+dist/
+
+# CUDA / torch extension build
+*.o
+*.so
+*.a
+
+# Torch JIT compile cache
+torch_extensions/
+
+# Editor
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
