@@ -506,7 +506,7 @@ std::tuple<torch::Tensor, torch::Tensor> gdn_prefill(
 /* ------------------------------------------------------------------ */
 /* Python bindings                                                      */
 /* ------------------------------------------------------------------ */
-PYBIND11_MODULE(gdn_prefill, m) {
+PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.doc() = "GDN prefill v2 - fused kernel derived from ref_prefill";
 
     m.def("prefill", &gdn_prefill,
