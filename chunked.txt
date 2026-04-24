@@ -1,0 +1,16 @@
+B= 1 T=   64 H= 16 dtype= bfloat16 max_err=4.235e-03 custom=  0.4861 ms ref=  9.7754 ms
+B= 1 T= 1024 H= 16 dtype= bfloat16 max_err=4.989e-03 custom=  5.5985 ms ref= 15.0139 ms
+B= 1 T= 2048 H= 16 dtype= bfloat16 max_err=1.100e-02 custom= 10.4996 ms ref= 21.1558 ms
+B= 1 T= 4096 H= 16 dtype= bfloat16 max_err=8.590e-03 custom= 20.9747 ms ref= 34.0210 ms
+B= 8 T=   64 H= 16 dtype= bfloat16 max_err=5.553e-03 custom=  0.8889 ms ref=  8.9160 ms
+B= 8 T= 1024 H= 16 dtype= bfloat16 max_err=6.686e-03 custom= 12.4035 ms ref= 15.1502 ms
+B= 8 T= 2048 H= 16 dtype= bfloat16 max_err=1.029e-02 custom= 24.7080 ms ref= 24.3734 ms
+B= 8 T= 4096 H= 16 dtype= bfloat16 max_err=8.530e-03 custom= 49.3682 ms ref= 47.3516 ms
+B=32 T=   64 H= 16 dtype= bfloat16 max_err=1.205e-02 custom=  2.3039 ms ref=  8.9446 ms
+B=32 T= 1024 H= 16 dtype= bfloat16 max_err=8.594e-03 custom= 35.2122 ms ref= 41.1754 ms
+B=32 T= 2048 H= 16 dtype= bfloat16 max_err=1.014e-02 custom= 70.0432 ms ref= 80.7088 ms
+B=32 T= 4096 H= 16 dtype= bfloat16 max_err=1.710e-02 custom=140.4338 ms ref=159.6844 ms
+B=64 T=   64 H= 16 dtype= bfloat16 max_err=8.420e-03 custom=  4.5527 ms ref=  9.1089 ms
+B=64 T= 1024 H= 16 dtype= bfloat16 max_err=8.242e-03 custom= 70.0054 ms ref= 78.5007 ms
+B=64 T= 2048 H= 16 dtype= bfloat16 max_err=1.373e-02 custom=140.1803 ms ref=155.2772 ms
+B=64 T= 4096 H= 16 dtype= bfloat16 max_err=1.132e-02 custom=280.1038 ms ref=310.6412 ms

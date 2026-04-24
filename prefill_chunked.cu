@@ -253,7 +253,7 @@ __global__ void gdn_prefill_pass2(
             dV_reg[i] -= old_v;
         }
 
-        /* Step 3: load k → smem_k_bf16, q (scaled) → as_q_bf16 */
+        /* Step 3: load k -> smem_k_bf16, q (scaled) → as_q_bf16 */
         for (int idx = vi; idx < C_DIM * K_DIM; idx += V_DIM) {
             int ci = idx / K_DIM;
             int ki = idx % K_DIM;
