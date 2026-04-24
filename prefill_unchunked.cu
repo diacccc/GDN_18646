@@ -41,7 +41,8 @@ __device__ static inline float sigmoid(float x)
 /* ------------------------------------------------------------------ */
 /* Kernel (bf16 input/output, fp32 state)                              */
 /* ------------------------------------------------------------------ */
-__global__ void prefill(
+__global__ void __launch_bounds__(V, 1)
+prefill(
     int B, int T,
     const __nv_bfloat16 *q,
     const __nv_bfloat16 *k,

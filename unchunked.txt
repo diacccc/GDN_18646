@@ -1,16 +1,16 @@
-B= 1 T=   64 H= 16 dtype= bfloat16 max_err=2.134e-04 custom=  0.3658 ms ref=  8.8670 ms
-B= 1 T= 1024 H= 16 dtype= bfloat16 max_err=2.294e-04 custom=  5.4783 ms ref= 14.7744 ms
-B= 1 T= 2048 H= 16 dtype= bfloat16 max_err=2.353e-04 custom= 10.1315 ms ref= 21.0676 ms
-B= 1 T= 4096 H= 16 dtype= bfloat16 max_err=2.420e-04 custom= 20.1518 ms ref= 33.7963 ms
-B= 8 T=   64 H= 16 dtype= bfloat16 max_err=2.337e-04 custom=  0.6709 ms ref=  8.8059 ms
-B= 8 T= 1024 H= 16 dtype= bfloat16 max_err=2.438e-04 custom=  9.8538 ms ref= 14.8768 ms
-B= 8 T= 2048 H= 16 dtype= bfloat16 max_err=2.433e-04 custom= 19.6266 ms ref= 24.4842 ms
-B= 8 T= 4096 H= 16 dtype= bfloat16 max_err=2.588e-04 custom= 39.2164 ms ref= 47.5302 ms
-B=32 T=   64 H= 16 dtype= bfloat16 max_err=2.378e-04 custom=  1.6876 ms ref=  8.7188 ms
-B=32 T= 1024 H= 16 dtype= bfloat16 max_err=2.442e-04 custom= 25.4001 ms ref= 41.2620 ms
-B=32 T= 2048 H= 16 dtype= bfloat16 max_err=2.440e-04 custom= 50.6913 ms ref= 80.8137 ms
-B=32 T= 4096 H= 16 dtype= bfloat16 max_err=2.441e-04 custom=101.3080 ms ref=159.8301 ms
-B=64 T=   64 H= 16 dtype= bfloat16 max_err=2.420e-04 custom=  3.2957 ms ref=  8.6756 ms
-B=64 T= 1024 H= 16 dtype= bfloat16 max_err=2.439e-04 custom= 50.4355 ms ref= 78.5705 ms
-B=64 T= 2048 H= 16 dtype= bfloat16 max_err=2.441e-04 custom=100.8198 ms ref=155.3377 ms
-B=64 T= 4096 H= 16 dtype= bfloat16 max_err=4.826e-04 custom=201.4422 ms ref=310.8915 ms
+B= 1 T=   64 H= 16 dtype= bfloat16 max_err=1.526e-05 custom=  0.3622 ms ref= 23.4984 ms
+B= 1 T= 1024 H= 16 dtype= bfloat16 max_err=1.221e-04 custom=  5.7218 ms ref=378.2249 ms
+B= 1 T= 2048 H= 16 dtype= bfloat16 max_err=1.221e-04 custom= 10.1129 ms ref=760.7460 ms
+B= 1 T= 4096 H= 16 dtype= bfloat16 max_err=1.221e-04 custom= 20.2518 ms ref=1516.5672 ms
+B= 8 T=   64 H= 16 dtype= bfloat16 max_err=1.221e-04 custom=  0.6685 ms ref= 23.8344 ms
+B= 8 T= 1024 H= 16 dtype= bfloat16 max_err=1.221e-04 custom=  9.8732 ms ref=380.1387 ms
+B= 8 T= 2048 H= 16 dtype= bfloat16 max_err=2.441e-04 custom= 19.6234 ms ref=755.8579 ms
+B= 8 T= 4096 H= 16 dtype= bfloat16 max_err=2.441e-04 custom= 39.2991 ms ref=1499.1219 ms
+B=32 T=   64 H= 16 dtype= bfloat16 max_err=2.441e-04 custom=  1.6804 ms ref= 29.0590 ms
+B=32 T= 1024 H= 16 dtype= bfloat16 max_err=2.441e-04 custom= 25.3932 ms ref=464.0241 ms
+B=32 T= 2048 H= 16 dtype= bfloat16 max_err=2.441e-04 custom= 50.6808 ms ref=927.4532 ms
+B=32 T= 4096 H= 16 dtype= bfloat16 max_err=2.441e-04 custom=101.2729 ms ref=1854.9674 ms
+B=64 T=   64 H= 16 dtype= bfloat16 max_err=1.221e-04 custom=  3.2996 ms ref= 54.0702 ms
+B=64 T= 1024 H= 16 dtype= bfloat16 max_err=2.441e-04 custom= 50.4153 ms ref=863.7286 ms
+B=64 T= 2048 H= 16 dtype= bfloat16 max_err=2.441e-04 custom=100.7103 ms ref=1727.0975 ms
+B=64 T= 4096 H= 16 dtype= bfloat16 max_err=2.441e-04 custom=201.3817 ms ref=3452.8969 ms
