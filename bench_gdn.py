@@ -154,7 +154,7 @@ def bench_e2e(baseline, custom, chunk_size):
     print(f"{'B':>4}  {'T':>6}  {'baseline (ms)':>14}  {'custom (ms)':>12}  {'speedup':>8}")
     print(f"  {'-'*52}")
 
-    for B in [1, 4, 8]:
+    for B in [1, 4, 8, 16, 32]:
         for T in [64, 256, 512, 1024]:
             if T % chunk_size != 0:
                 continue
