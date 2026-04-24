@@ -51,6 +51,7 @@ def run_case(ext, B, T, Hh=16, dk=128, dv=256, dtype=torch.bfloat16):
             A_log.contiguous(), a.contiguous(), dt_bias.contiguous(),
             b_logits.contiguous(), mask.contiguous(),
             state_in=None, scale=scale,
+            chunk_size=chunk_size,
         )
 
     diff = (o_custom.float() - o_ref.float()).abs()

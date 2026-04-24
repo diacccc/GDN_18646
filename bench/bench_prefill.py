@@ -95,6 +95,7 @@ def run_bench(ext=None):
                     A_log.contiguous(), a.contiguous(), dt_bias.contiguous(),
                     b_logits.contiguous(), mask.contiguous(),
                     state_in=None, scale=scale,
+                    chunk_size=chunk_size,
                 )
 
             t_cuda = bench_ms(cuda_fn)
