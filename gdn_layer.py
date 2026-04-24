@@ -90,14 +90,14 @@ class GDNLayerBaseline:
         a = (xn @ w['W_a'].T).transpose(1, 2).contiguous()
         b = (xn @ w['W_b'].T).transpose(1, 2).contiguous()
 
-        # 4. Prefill recurrence  →  o [B, H, T, DV]
+        # 4. Prefill recurrence  →  o [B, H, T, DV] float32
         o, _ = ref_prefill(
             q, k, v, w['A_log'], a, w['dt_bias'], b, mask,
             state_in=None, scale=self.scale,
         )
 
         # 5. Output projection  →  [B, T, D]
-        return o.transpose(1, 2).reshape(B, T, H*DV) @ w['W_o'].T
+        return o.to(x.dtype).transpose(1, 2).reshape(B, T, H*DV) @ w['W_o'].T
 
 
 # ─────────────────────────────────────────────────────────────────────────────
