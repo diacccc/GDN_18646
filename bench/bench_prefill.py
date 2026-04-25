@@ -1,12 +1,12 @@
 """
-bench_prefill.py
-Throughput / latency benchmark for the prefill recurrence CUDA kernel.
+bench_fused_proj_conv_silu.py
+Throughput / latency benchmark for the fused Proj + Conv1D + SiLU kernel.
 
 Standalone:
-    python -m bench.bench_prefill
+    python -m bench.bench_fused_proj_conv_silu
 
 Via Modal:
-    modal run modal_app.py --mode bench --kernel prefill
+    modal run modal_app.py --mode bench --kernel fused_proj_conv_silu
 """
 
 import sys
@@ -15,7 +15,7 @@ import torch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from reference.prefill_ref import ref_prefill
+from reference.fused_proj_conv_silu_ref import *
 
 
 def _compile_extension():
@@ -23,12 +23,21 @@ def _compile_extension():
 
     kernel_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                               "kernels")
-    return load(
-        name="prefill_ext",
-        sources=[os.path.join(kernel_dir, "prefill_chunked.cu")],
-        extra_cuda_cflags=["-O3", "--use_fast_math", "-lineinfo", "-arch=sm_80"],
+    ext = load(
+        name="fused_proj_conv_silu_ext",
+        sources=[
+            os.path.join(kernel_dir, "fused_proj_conv_silu.cu"),
+        ],
+        extra_cuda_cflags=[
+            "-O3",
+            "--use_fast_math",
+            "-gencode=arch=compute_80,code=sm_80",
+            "--expt-relaxed-constexpr",
+            "-lineinfo",
+        ],
         verbose=True,
     )
+    return ext
 
 
 def bench_ms(fn, warmup=20, iters=100):
@@ -51,61 +60,66 @@ def run_bench(ext=None):
     if ext is None:
         ext = _compile_extension()
 
-    chunk_size = int(ext.C_DIM)
-    Hh    = 16
-    dk    = 128
-    dv    = 256
-    scale = 1.0
-    dtype = torch.bfloat16
+    D      = 2048
+    D_out  = 2048
+    conv_k = 4
 
-    print("=" * 80)
-    print(f"Benchmark: Prefill  H={Hh}  dk={dk}  dv={dv}  chunk_size={chunk_size}")
-    print("=" * 80)
+    print("=" * 90)
+    print(f"Benchmark: D={D}, D_out={D_out}, conv_k={conv_k}")
+    print("=" * 90)
     print(f"{'B':>4}  {'T':>6}  {'cuda (ms)':>10}  {'ref (ms)':>10}  {'speedup':>8}")
     print("-" * 50)
 
-    for B in [1, 4, 8]:
-        for T in [64, 256, 512, 1024, 2048]:
-            if T % chunk_size != 0:
-                print(f"{B:>4}  {T:>6}  skipped (T not divisible by chunk_size={chunk_size})")
-                continue
+    for B in [1, 8, 32, 64]:
+        for T in [1, 2048, 4096, 8192]:
+            x      = torch.randn(B, T, D, device="cuda", dtype=torch.bfloat16) * 0.02
+            weight = torch.randn(D_out, D, device="cuda", dtype=torch.bfloat16) * (D ** -0.5)
+            conv_w = torch.randn(D_out, conv_k, device="cuda", dtype=torch.bfloat16) * 0.5
 
-            q        = torch.randn(B, Hh, T, dk, device="cuda", dtype=dtype) * (dk ** -0.5)
-            k        = torch.randn(B, Hh, T, dk, device="cuda", dtype=dtype) * (dk ** -0.5)
-            v        = torch.randn(B, Hh, T, dv, device="cuda", dtype=dtype) * (dk ** -0.5)
-            a        = torch.randn(B, Hh, T, device="cuda", dtype=dtype)
-            b_logits = torch.randn(B, Hh, T, device="cuda", dtype=dtype)
-            A_log    = torch.zeros(Hh, device="cuda", dtype=torch.float32)
-            dt_bias  = torch.tensor(0.0, device="cuda", dtype=torch.float32)
-            mask     = torch.ones(B, T, device="cuda", dtype=torch.float32)
-            state_in_ext = torch.empty(0, device="cuda", dtype=torch.float32)
-
-            def cuda_fn():
-                return ext.prefill(
-                    q.contiguous(), k.contiguous(), v.contiguous(),
-                    A_log.contiguous(), a.contiguous(),
-                    float(dt_bias.item()),
-                    b_logits.contiguous(), mask.contiguous(),
-                    state_in_ext, scale,
-                )
-
-            def ref_fn():
-                return ref_prefill(
-                    q.contiguous(), k.contiguous(), v.contiguous(),
-                    A_log.contiguous(), a.contiguous(), dt_bias.contiguous(),
-                    b_logits.contiguous(), mask.contiguous(),
-                    state_in=None, scale=scale,
-                    chunk_size=chunk_size,
-                )
-
-            t_cuda = bench_ms(cuda_fn)
-            t_ref  = bench_ms(ref_fn)
+            t_cuda = bench_ms(
+                lambda: ext.forward(x.contiguous(), weight.contiguous(), conv_w.contiguous()))
+            t_ref  = bench_ms(
+                lambda: ref_proj_conv_silu(x, weight, conv_w))
 
             print(f"{B:>4}  {T:>6}  {t_cuda:>10.4f}  {t_ref:>10.4f}  {t_ref/t_cuda:>7.2f}x")
 
-            del q, k, v, a, b_logits, A_log, dt_bias, mask, state_in_ext
+            del x, weight, conv_w
             torch.cuda.empty_cache()
-        print()
+
+    # V-path benchmark (D_out = 4096)
+    D_out_v = 4096
+    print()
+    print("=" * 90)
+    print(f"Benchmark (V path): D={D}, D_out={D_out_v}, conv_k={conv_k}")
+    print("=" * 90)
+    print(f"{'B':>4}  {'T':>6}  {'cuda (ms)':>10}  {'ref (ms)':>10}  {'speedup':>8}")
+    print("-" * 50)
+
+    for B in [1, 8, 32, 64]:
+        for T in [1, 2048, 4096, 8192]:
+            x      = torch.randn(B, T, D, device="cuda", dtype=torch.bfloat16) * 0.02
+            weight = torch.randn(D_out_v, D, device="cuda", dtype=torch.bfloat16) * (D ** -0.5)
+            conv_w = torch.randn(D_out_v, conv_k, device="cuda", dtype=torch.bfloat16) * 0.5
+
+            t_cuda = bench_ms(
+                lambda: ext.forward(x.contiguous(), weight.contiguous(), conv_w.contiguous()))
+            t_ref  = bench_ms(
+                lambda: ref_proj_conv_silu(x, weight, conv_w))
+
+            # t_ref_proj = bench_ms(
+            #     lambda: ref_proj(x, weight))
+            # x_proj = ref_proj(x, weight)  # reuse for conv and silu benchmarks
+            # t_ref_conv = bench_ms(
+            #     lambda: ref_conv1d(x_proj, conv_w))
+            # y = ref_conv1d(x_proj, conv_w)  # reuse for silu benchmark
+            # t_ref_silu = bench_ms(
+            #     lambda: ref_silu(y))
+
+            print(f"{B:>4}  {T:>6}  {t_cuda:>10.4f}  {t_ref:>10.4f}  {t_ref/t_cuda:>7.2f}x")
+            # print(f"       Breakdown (ms): proj={t_ref_proj:.4f}  conv={t_ref_conv:.4f}  silu={t_ref_silu:.4f}")
+
+            del x, weight, conv_w
+            torch.cuda.empty_cache()
 
 
 if __name__ == "__main__":
