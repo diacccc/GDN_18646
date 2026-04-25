@@ -34,17 +34,6 @@ __global__ void rmsnorm_fwd_bf16_d2048_warp(
     // ----------------------------------------------------------------
     // Phase 1: Cooperatively load gamma into shared memory
     // ----------------------------------------------------------------
-    __shared__ float s_gamma[D]; // 8KB
-
-    const int lin_tid       = row_in_block * 32 + lane;
-    const int total_threads = 32 * ROWS_PER_BLOCK;
-
-    #pragma unroll
-    for (int i = lin_tid; i < D; i += total_threads)
-    {
-        s_gamma[i] = __bfloat162float(__ldg(&gamma[i]));
-    }
-    __syncthreads();
 
     if (row >= R) return;
 
@@ -75,31 +64,14 @@ __global__ void rmsnorm_fwd_bf16_d2048_warp(
     // ----------------------------------------------------------------
     // Phase 4: Precompute scale = rstd * gamma[col] from shared memory
     // ----------------------------------------------------------------
-    float scale_reg[ELEMS_PER_THREAD];
 
     #pragma unroll
-    for (int i = 0; i < ELEMS_PER_THREAD; ++i)
-    {
-        scale_reg[i] = rstd * s_gamma[lane + i * 32];
-    }
-
-    // ----------------------------------------------------------------
-    // Phase 5: Write output
-    // ----------------------------------------------------------------
-    #pragma unroll
-    for (int i = 0; i < ELEMS_PER_THREAD; ++i)
-    {
+    for (int i = 0; i < ELEMS_PER_THREAD; ++i) {
         int col = lane + i * 32;
-        if constexpr (HAS_BIAS)
-        {
-            y_row[col] = __float2bfloat16_rn(
-                fmaf(x_reg[i], scale_reg[i], __bfloat162float(__ldg(&bias[col]))));
-        }
-        else
-        {
-            y_row[col] = __float2bfloat16_rn(x_reg[i] * scale_reg[i]);
-        }
+        float g = __bfloat162float(__ldg(&gamma[col]));
+        y_row[col] = __float2bfloat16_rn(x_reg[i] * rstd * g);
     }
+
 }
 
 static void check_inputs(torch::Tensor x, torch::Tensor gamma)
@@ -122,9 +94,9 @@ static void launch_rmsnorm(
     int R,
     float eps)
 {
-    // blockDim: (32, ROWS_PER_BLOCK) — one warp per row
+    // blockDim: (THREADS_PER_ROW, ROWS_PER_BLOCK) — one warp per row
     // gridDim:  ceil(R / ROWS_PER_BLOCK) blocks
-    dim3 block(32, ROWS_PER_BLOCK);
+    dim3 block(THREADS_PER_ROW, ROWS_PER_BLOCK);
     dim3 grid((R + ROWS_PER_BLOCK - 1) / ROWS_PER_BLOCK);
 
     rmsnorm_fwd_bf16_d2048_warp<ROWS_PER_BLOCK, false><<<grid, block>>>(x, gamma, nullptr, y, R, eps);

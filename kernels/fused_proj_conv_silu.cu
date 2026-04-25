@@ -60,15 +60,15 @@ using namespace nvcuda;
 
 /* ── Compile-time constants ─────────────────────────────────────────────── */
 #define TILE_T            125
-#define TILE_C             64
-#define BK                 32
+#define TILE_C            128
+#define BK                 64
 #define WMMA_M             16
 #define WMMA_N             16
 #define WMMA_K             16
 #define CONV_K              4
 #define WARPS               4
 #define THREADS       (WARPS * 32)              /* 128        */
-#define PIPE                3
+#define PIPE                2
 
 #define GEMM_T        (TILE_T + CONV_K - 1)     /* 128        */
 #define GEMM_T_PAD     GEMM_T                   /* 128 = 8·16 */
@@ -80,9 +80,11 @@ using namespace nvcuda;
 #define SMEM_LDA      (BK + SMEM_PAD)           /* 40 */
 #define SMEM_LDB      (BK + SMEM_PAD)           /* 40 */
 
+#define CHUNKS_PER_ROW (BK / 8)   // 8 bf16 per 16-byte cp.async
+
 /* ── PTX helpers ────────────────────────────────────────────────────────── */
 __device__ __forceinline__ float silu_f(float x) {
-    return x / (1.0f + expf(-x));
+    return x / (1.0f + __expf(-x));
 }
 
 __device__ __forceinline__
@@ -100,7 +102,7 @@ __device__ __forceinline__ void cp_async_wait_group() {
 }
 
 /* ── Main kernel ────────────────────────────────────────────────────────── */
-__global__ __launch_bounds__(THREADS, 3)
+__global__ __launch_bounds__(THREADS, 2)
 void fused_proj_conv_silu_kernel(
     const nv_bfloat16* __restrict__ input,
     const nv_bfloat16* __restrict__ weight,
@@ -149,35 +151,40 @@ void fused_proj_conv_silu_kernel(
      *   Rows outside the valid time range get nb=0 → cp.async zero-fills. */
     #define ISSUE_STAGE(stage, k_val)                                           \
     {                                                                           \
-        nv_bfloat16* sA = smem_A + (stage) * GEMM_T_PAD * SMEM_LDA;            \
-        nv_bfloat16* sB = smem_B + (stage) * TILE_C    * SMEM_LDB;             \
-        int _bk = (k_val) * BK;                                                \
-        /* A-tile: 128 rows × 4 chunks/row → 4 passes of 128 threads */        \
+        nv_bfloat16* sA = smem_A + (stage) * GEMM_T_PAD * SMEM_LDA;             \
+        nv_bfloat16* sB = smem_B + (stage) * TILE_C    * SMEM_LDB;              \
+        int _bk = (k_val) * BK;                                                  \
+                                                                                \
+        constexpr int A_CHUNKS = GEMM_T_PAD * CHUNKS_PER_ROW;                   \
+        constexpr int B_CHUNKS = TILE_C     * CHUNKS_PER_ROW;                   \
+                                                                                \
         _Pragma("unroll")                                                       \
-        for (int pass = 0; pass < 4; pass++) {                                  \
-            int cid    = tid + pass * THREADS;     /* 0..511            */      \
-            int row    = cid >> 2;                 /* 0..127            */      \
-            int off    = (cid & 3) << 3;           /* 0, 8, 16, 24 bf16 */      \
-            int abs_t  = t_gemm_start + row;                                    \
-            bool okA   = (abs_t >= 0) && (abs_t < T);                           \
-            int nbA    = okA ? 16 : 0;                                          \
-            int safe_t = okA ? abs_t : 0;                                       \
-            cp_async_16(                                                        \
-                sA + row * SMEM_LDA + off,                                      \
-                input + ((size_t)b * T + safe_t) * D + _bk + off,              \
-                nbA);                                                           \
-        }                                                                       \
-        /* B-tile: 64 rows × 4 chunks/row → 2 passes of 128 threads */         \
+        for (int cid = tid; cid < A_CHUNKS; cid += THREADS) {                   \
+            int row   = cid / CHUNKS_PER_ROW;                                   \
+            int chunk = cid % CHUNKS_PER_ROW;                                   \
+            int off   = chunk * 8;                                               \
+            int abs_t = t_gemm_start + row;                                      \
+            bool okA  = (abs_t >= 0) && (abs_t < T);                             \
+            int nbA   = okA ? 16 : 0;                                            \
+            int safe_t = okA ? abs_t : 0;                                        \
+                                                                                \
+            cp_async_16(                                                         \
+                sA + row * SMEM_LDA + off,                                       \
+                input + ((size_t)b * T + safe_t) * D + _bk + off,               \
+                nbA);                                                            \
+        }                                                                        \
+                                                                                \
         _Pragma("unroll")                                                       \
-        for (int pass = 0; pass < 2; pass++) {                                  \
-            int cid    = tid + pass * THREADS;     /* 0..255            */      \
-            int row    = cid >> 2;                 /* 0..63             */      \
-            int off    = (cid & 3) << 3;                                        \
-            cp_async_16(                                                        \
-                sB + row * SMEM_LDB + off,                                      \
-                weight + (size_t)(c_base + row) * D + _bk + off,               \
-                16);                                                            \
-        }                                                                       \
+        for (int cid = tid; cid < B_CHUNKS; cid += THREADS) {                   \
+            int row   = cid / CHUNKS_PER_ROW;                                   \
+            int chunk = cid % CHUNKS_PER_ROW;                                   \
+            int off   = chunk * 8;                                               \
+                                                                                \
+            cp_async_16(                                                         \
+                sB + row * SMEM_LDB + off,                                       \
+                weight + (size_t)(c_base + row) * D + _bk + off,                \
+                16);                                                             \
+        }                                                                        \
     }
 
     /* ── Pre-issue PIPE-1 stages (K = 0..PIPE-2) ─────────────────────── */

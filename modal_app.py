@@ -15,6 +15,9 @@ Usage (from project root, with Modal installed and `modal setup` done):
     # Run performance benchmark on A100
     modal run modal_app.py::bench
 
+    # Profile with Nsight Compute on A100
+    modal run modal_app.py --mode profile --kernel fused_proj_conv_silu
+
     # Drop into an interactive shell on A100
     modal shell modal_app.py::shell
 
@@ -174,6 +177,89 @@ def bench(kernel: str = "fused_proj_conv_silu"):
     run_bench(ext)
 
 
+@app.function(gpu=GPU, timeout=1800, volumes=VOLUMES)
+def profile(kernel: str = "fused_proj_conv_silu"):
+    """Profile a kernel with torch.profiler (CUPTI). Prints key metrics to stdout."""
+    import sys
+    sys.path.insert(0, "/root")
+    import torch
+    from torch.profiler import profile as torch_profile, ProfilerActivity, schedule
+
+    ext = _compile_one(kernel)
+
+    B, T, D = 8, 2048, 2048
+    D_out = 4096 if "proj" in kernel else 2048
+    conv_k = 4
+
+    x      = torch.randn(B, T, D, device="cuda", dtype=torch.bfloat16) * 0.02
+    weight = torch.randn(D_out, D, device="cuda", dtype=torch.bfloat16) * (D ** -0.5)
+    conv_w = torch.randn(D_out, conv_k, device="cuda", dtype=torch.bfloat16) * 0.5
+
+    # Warmup
+    for _ in range(5):
+        ext.forward(x, weight, conv_w)
+    torch.cuda.synchronize()
+
+    # Profile with CUPTI
+    with torch_profile(
+        activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
+        record_shapes=True,
+        with_stack=True,
+        with_flops=True,
+    ) as prof:
+        for _ in range(10):
+            ext.forward(x, weight, conv_w)
+        torch.cuda.synchronize()
+
+    print("=" * 90)
+    print(f"Profile: kernel={kernel}  B={B} T={T} D={D} D_out={D_out}")
+    print("=" * 90)
+
+    # Key averages table
+    print("\n── CUDA Kernel Summary (sorted by CUDA time) ──────────────────────")
+    print(prof.key_averages().table(sort_by="cuda_time_total", row_limit=20))
+
+    # Detailed CUDA events
+    print("\n── CUDA Event Trace (top 30 by duration) ──────────────────────────")
+    events = sorted(
+        [e for e in prof.events() if e.device_type == torch.autograd.DeviceType.CUDA],
+        key=lambda e: e.cuda_time_total,
+        reverse=True,
+    )
+    print(f"{'Kernel':<60} {'Calls':>6} {'CUDA us':>10} {'Avg us':>10}")
+    print("-" * 90)
+    seen = set()
+    for e in events[:30]:
+        key = e.key
+        if key in seen:
+            continue
+        seen.add(key)
+        print(f"{key[:59]:<60} {e.count:>6} {e.cuda_time_total:>10.1f} "
+              f"{e.cuda_time_total / max(e.count, 1):>10.1f}")
+
+    # ── Register / shared-memory usage via cuobjdump ──────────────────
+    import subprocess, glob
+    ext_name = _KERNEL_REGISTRY[kernel][0]
+    so_files = glob.glob(f"/root/.cache/torch_extensions/py311_cu128/{ext_name}/*.so")
+    if so_files:
+        res = subprocess.run(
+            ["cuobjdump", "-res-usage", so_files[0]],
+            capture_output=True, text=True,
+        )
+        print("\n── Resource Usage (registers, smem, spill) ─────────────────────────")
+        print(res.stdout.strip() if res.stdout.strip() else "(no output from cuobjdump)")
+        if res.stderr.strip():
+            print(res.stderr.strip())
+    else:
+        print(f"\n[profile] could not find .so for {ext_name}")
+
+    # Export Chrome trace for optional local inspection
+    trace_path = "/tmp/profile_trace.json"
+    prof.export_chrome_trace(trace_path)
+    print(f"\n[profile] Chrome trace saved to {trace_path}")
+    print("[profile] (Use `modal shell` to copy it out, or view in chrome://tracing)")
+
+
 @app.function(gpu=GPU, timeout=3600, volumes=VOLUMES)
 def shell():
     """
@@ -195,5 +281,7 @@ def main(mode: str = "test", kernel: str = "all"):
         test.remote(kernel=kernel)
     elif mode == "bench":
         bench.remote(kernel=kernel)
+    elif mode == "profile":
+        profile.remote(kernel=kernel)
     else:
-        raise ValueError(f"Unknown mode {mode!r}; use 'test' or 'bench'.")
+        raise ValueError(f"Unknown mode {mode!r}; use 'test', 'bench', or 'profile'.")
