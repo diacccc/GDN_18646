@@ -43,6 +43,7 @@ image = (
         "torch==2.10.0",
         "numpy",
         "ninja",  # much faster than plain setuptools build
+        "einops",
         extra_index_url="https://download.pytorch.org/whl/cu128",
     )
     # Source code: mounted at container start (fast redeploy on edits).
@@ -50,6 +51,8 @@ image = (
     .add_local_dir(HERE / "reference", "/root/reference")
     .add_local_dir(HERE / "tests", "/root/tests")
     .add_local_dir(HERE / "bench", "/root/bench")
+    .add_local_file(HERE / "gdn_layer.py", "/root/gdn_layer.py")
+    .add_local_file(HERE / "bench_gdn.py", "/root/bench_gdn.py")
 )
 
 app = modal.App("gdn-kernels", image=image)
@@ -172,6 +175,15 @@ def bench(kernel: str = "fused_proj_conv_silu"):
         raise ValueError(f"Unknown kernel {kernel!r}")
 
     run_bench(ext)
+
+
+@app.function(gpu=GPU, timeout=1800, volumes=VOLUMES)
+def bench_gdn():
+    """Run end-to-end GDN benchmark (custom kernels vs PyTorch baseline)."""
+    import sys
+    sys.path.insert(0, "/root")
+    from bench_gdn import main
+    main()
 
 
 @app.function(gpu=GPU, timeout=3600, volumes=VOLUMES)

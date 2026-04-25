@@ -28,49 +28,34 @@ def ref_decode(q, k, v, state, A_log, a_param, dt_bias, b_param, scale=None):
         new_state : [B, H, K, V] float32
     """
     B, T, H, K = q.shape
-    V = v.shape[-1]
+    assert T == 1, f"ref_decode expects T=1, got T={T}"
 
     if scale is None:
         scale = 1.0 / math.sqrt(K)
 
-    x = a_param.float() + dt_bias.float()
-    g = torch.exp(-torch.exp(A_log.float()) * F.softplus(x))      # [B, 1, H]
-    beta = torch.sigmoid(b_param.float())                          # [B, 1, H]
+    a_scalar = a_param.squeeze(1)
+    b_scalar = b_param.squeeze(1)
 
-    q_f32 = q.squeeze(1).float()     # [B, H, K]
-    k_f32 = k.squeeze(1).float()
-    v_f32 = v.squeeze(1).float()     # [B, H, V]
-    g_f32 = g.squeeze(1).float()     # [B, H]
-    beta_f32 = beta.squeeze(1).float()
+    raw = a_scalar.float() + dt_bias.float()                     # [B, H]
+    g = torch.exp(-torch.exp(A_log.float()) * F.softplus(raw))   # [B, H]
+    beta = torch.sigmoid(b_scalar.float())                       # [B, H]
 
-    state_f32 = state.float().clone()  # [B, H, K, V]
+    q_f32 = q.squeeze(1).float()                                 # [B, H, K]
+    k_f32 = k.squeeze(1).float()                                 # [B, H, K]
+    v_f32 = v.squeeze(1).float()                                 # [B, H, V]
+    new_state = state.float().clone()                            # [B, H, K, V]
 
-    output = torch.zeros(B, H, V, dtype=torch.float32, device=q.device)
-    new_state = torch.zeros_like(state_f32)
+    # Gated decay.
+    new_state = new_state * g[:, :, None, None]
 
-    for b in range(B):
-        for h in range(H):
-            g_val = g_f32[b, h]
-            beta_val = beta_f32[b, h]
-            k_h = k_f32[b, h]         # [K]
-            q_h = q_f32[b, h]         # [K]
-            v_h = v_f32[b, h]         # [V]
-            S = state_f32[b, h]       # [K, V]
+    # Read.
+    r = torch.einsum('bhk,bhkd->bhd', k_f32, new_state)          # [B, H, V]
 
-            # Gate
-            old_S = g_val * S
+    # Delta and rank-1 update.
+    delta = beta[:, :, None] * (v_f32 - r)                       # [B, H, V]
+    new_state = new_state + torch.einsum('bhk,bhd->bhkd', k_f32, delta)
 
-            # old_v = k^T S  -> [V]
-            old_v = k_h @ old_S
-
-            # Delta rule
-            new_v = beta_val * v_h + (1 - beta_val) * old_v
-
-            # Rank-1 update
-            S_new = old_S - k_h.unsqueeze(1) @ old_v.unsqueeze(0) \
-                          + k_h.unsqueeze(1) @ new_v.unsqueeze(0)
-
-            output[b, h] = scale * (q_h @ S_new)
-            new_state[b, h] = S_new
+    # Output.
+    output = scale * torch.einsum('bhk,bhkd->bhd', q_f32, new_state)
 
     return output, new_state
